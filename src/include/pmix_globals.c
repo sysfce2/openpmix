@@ -8,7 +8,7 @@
  * Copyright (c) 2016      IBM Corporation.  All rights reserved.
  * Copyright (c) 2019      Mellanox Technologies, Inc.
  *                         All rights reserved.
- * Copyright (c) 2021-2023 Nanook Consulting.  All rights reserved.
+ * Copyright (c) 2021-2024 Nanook Consulting  All rights reserved.
  * Copyright (c) 2023      Triad National Security, LLC. All rights reserved.
  * $COPYRIGHT$
  *
@@ -141,6 +141,7 @@ static void nscon(pmix_namespace_t *p)
     p->num_waiting = 0;
     p->all_registered = false;
     p->version_stored = false;
+    p->job_info_recvd = false;
     p->jobbkt = NULL;
     p->ndelivered = 0;
     p->nfinalized = 0;
@@ -203,7 +204,7 @@ static void keyindex_construct(pmix_keyindex_t *ki)
     ki->table = PMIX_NEW(pmix_pointer_array_t, tma);
     pmix_pointer_array_init(ki->table, 1024, INT_MAX, 128);
 
-    ki->next_id = PMIX_INDEX_BOUNDARY;
+    ki->next_id = 0;
 }
 
 static void keyindex_destruct(pmix_keyindex_t *ki)
@@ -274,6 +275,9 @@ static void pcon(pmix_peer_t *p)
     PMIX_CONSTRUCT(&p->epilog.cleanup_dirs, pmix_list_t);
     PMIX_CONSTRUCT(&p->epilog.cleanup_files, pmix_list_t);
     PMIX_CONSTRUCT(&p->epilog.ignores, pmix_list_t);
+    p->dyn_tags_start = PMIX_PTL_TAG_DYNAMIC;
+    p->dyn_tags_current = PMIX_PTL_TAG_DYNAMIC;
+    p->dyn_tags_end = UINT32_MAX;
 }
 
 static void pdes(pmix_peer_t *p)
@@ -320,6 +324,7 @@ static void iofreqcon(pmix_iof_req_t *p)
     p->remote_id = 0;
     p->procs = NULL;
     p->nprocs = 0;
+    memset(&p->flags, 0, sizeof(pmix_iof_flags_t));
     p->channels = PMIX_FWD_NO_CHANNELS;
     p->cbfunc = NULL;
     p->regcbfunc = NULL;
@@ -409,6 +414,7 @@ PMIX_EXPORT PMIX_CLASS_INSTANCE(pmix_get_logic_t,
 static void cbcon(pmix_cb_t *p)
 {
     PMIX_CONSTRUCT_LOCK(&p->lock);
+    p->status = PMIX_SUCCESS;
     p->checked = false;
     PMIX_CONSTRUCT(&p->data, pmix_buffer_t);
     p->cbfunc.ptlfn = NULL;
@@ -497,7 +503,6 @@ static void qcon(pmix_query_caddy_t *p)
     p->relcbfunc = NULL;
     p->credcbfunc = NULL;
     p->validcbfunc = NULL;
-    p->stqcbfunc = NULL;
 }
 static void qdes(pmix_query_caddy_t *p)
 {
@@ -528,6 +533,7 @@ static void ncon(pmix_notify_caddy_t *p)
     memset(p->source.nspace, 0, PMIX_MAX_NSLEN + 1);
     p->source.rank = PMIX_RANK_UNDEF;
     p->range = PMIX_RANGE_UNDEF;
+    p->staylocal = false;
     p->targets = NULL;
     p->ntargets = 0;
     p->nleft = SIZE_MAX;
@@ -577,6 +583,7 @@ void pmix_dstor_release_tma(pmix_dstor_t *d,
 static void grcon(pmix_group_t *p)
 {
     p->grpid = NULL;
+    p->ctxid = SIZE_MAX;
     p->members = NULL;
     p->nmbrs = 0;
 }
@@ -584,9 +591,12 @@ static void grdes(pmix_group_t *p)
 {
     if (NULL != p->grpid) {
         free(p->grpid);
+        p->grpid = NULL;
     }
+    p->ctxid = SIZE_MAX;
     if (NULL != p->members) {
         PMIX_PROC_FREE(p->members, p->nmbrs);
+        p->members = NULL;
     }
 }
 PMIX_CLASS_INSTANCE(pmix_group_t,
@@ -746,12 +756,7 @@ static bool dirpath_is_empty(const char *path)
 int pmix_event_assign(struct event *ev, pmix_event_base_t *evbase, int fd, short arg,
                       event_callback_fn cbfn, void *cbd)
 {
-#if PMIX_HAVE_LIBEV
-    event_set(ev, fd, arg, cbfn, cbd);
-    event_base_set(evbase, ev);
-#else
     event_assign(ev, evbase, fd, arg, cbfn, cbd);
-#endif
     return 0;
 }
 
@@ -760,13 +765,7 @@ pmix_event_t *pmix_event_new(pmix_event_base_t *b, int fd, short fg, event_callb
 {
     pmix_event_t *ev = NULL;
 
-#if PMIX_HAVE_LIBEV
-    ev = (pmix_event_t *) calloc(1, sizeof(pmix_event_t));
-    ev->ev_base = b;
-#else
     ev = event_new(b, fd, fg, (event_callback_fn) cbfn, cbd);
-#endif
-
     return ev;
 }
 

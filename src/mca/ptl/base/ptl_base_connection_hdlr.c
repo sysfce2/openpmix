@@ -10,7 +10,7 @@
  * Copyright (c) 2004-2005 The Regents of the University of California.
  *                         All rights reserved.
  * Copyright (c) 2015-2020 Intel, Inc.  All rights reserved.
- * Copyright (c) 2021-2022 Nanook Consulting.  All rights reserved.
+ * Copyright (c) 2021-2024 Nanook Consulting  All rights reserved.
  * $COPYRIGHT$
  *
  * Additional copyrights may follow
@@ -300,6 +300,10 @@ void pmix_ptl_base_connection_handler(int sd, short args, void *cbdata)
     if (NULL == peer) {
         goto error;
     }
+    /* Assign the upper half of the tag space for sendrecvs */
+    peer->dyn_tags_start    = PMIX_PTL_TAG_DYNAMIC + (UINT32_MAX - PMIX_PTL_TAG_DYNAMIC)/2 + 1;
+    peer->dyn_tags_end      = UINT32_MAX;
+    peer->dyn_tags_current  = peer->dyn_tags_start;
     /* mark that this peer is a client of the given type */
     memcpy(&peer->proc_type, &pnd->proc_type, sizeof(pmix_proc_type_t));
     /* save the protocol */
@@ -592,6 +596,8 @@ static void process_cbfunc(int sd, short args, void *cbdata)
     PMIX_PROC_CREATE(req->procs, req->nprocs);
     PMIX_LOAD_PROCID(&req->procs[0], pmix_globals.myid.nspace, pmix_globals.myid.rank);
     req->channels = PMIX_FWD_STDOUT_CHANNEL | PMIX_FWD_STDERR_CHANNEL | PMIX_FWD_STDDIAG_CHANNEL;
+    // default to formatting output as we were directed to do
+    req->flags = pmix_globals.iof_flags;
     req->remote_id = 0; // default ID for tool during init
     req->local_id = pmix_pointer_array_add(&pmix_globals.iof_requests, req);
 
@@ -693,6 +699,10 @@ static pmix_status_t process_tool_request(pmix_pending_connection_t *pnd,
         PMIX_ERROR_LOG(PMIX_ERR_NOMEM);
         return PMIX_ERR_NOMEM;
     }
+    /* Assign the upper half of the tag space for sendrecvs */
+    peer->dyn_tags_start    = PMIX_PTL_TAG_DYNAMIC + (UINT32_MAX - PMIX_PTL_TAG_DYNAMIC)/2 + 1;
+    peer->dyn_tags_end      = UINT32_MAX;
+    peer->dyn_tags_current  = peer->dyn_tags_start;
     pnd->peer = peer;
     /* if this is a tool we launched, then the host may
      * have already registered it as a client - so check

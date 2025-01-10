@@ -14,7 +14,7 @@
 # major, minor, and release are generally combined in the form
 # <major>.<minor>.<release>.
 
-major=6
+major=7
 minor=0
 release=0
 
@@ -29,7 +29,7 @@ greek=a1
 # PMIx required dependency versions.
 # List in x.y.z format.
 
-hwloc_min_version=1.11.0
+hwloc_min_version=2.1.0
 event_min_version=2.0.21
 automake_min_version=1.13.4
 autoconf_min_version=2.69.0
@@ -119,7 +119,7 @@ date="Unreleased developer copy"
 # Version numbers are described in the Libtool current:revision:age
 # format.
 
-libpmix_so_version=20:0:18
+libpmix_so_version=25:0:23
 
 # "Common" components install standalone libraries that are run-time
 # # linked by one or more components.  So they need to be versioned as

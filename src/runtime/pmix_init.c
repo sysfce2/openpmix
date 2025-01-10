@@ -46,10 +46,7 @@
 #include "src/mca/plog/base/base.h"
 #include "src/mca/pnet/base/base.h"
 #include "src/mca/preg/base/base.h"
-#include "src/mca/prm/base/base.h"
 #include "src/mca/psec/base/base.h"
-#include "src/mca/psquash/base/base.h"
-#include "src/mca/pstrg/base/base.h"
 #include "src/mca/ptl/base/base.h"
 #include "src/util/pmix_name_fns.h"
 #include "src/util/pmix_net.h"
@@ -221,6 +218,7 @@ int pmix_rte_init(uint32_t type, pmix_info_t info[], size_t ninfo, pmix_ptl_cbfu
     pmix_info_t *iptr;
     size_t minfo;
     bool keepfqdn = false;
+    pmix_iof_flags_t flags;
 
 #if PMIX_NO_LIB_DESTRUCTOR
     if (pmix_init_called) {
@@ -235,6 +233,7 @@ int pmix_rte_init(uint32_t type, pmix_info_t info[], size_t ninfo, pmix_ptl_cbfu
 #endif
 
     pmix_init_called = true;
+    memset(&flags, 0, sizeof(pmix_iof_flags_t));
 
     if (PMIX_SUCCESS != pmix_init_util(info, ninfo, NULL)) {
         return PMIX_ERROR;
@@ -290,7 +289,7 @@ int pmix_rte_init(uint32_t type, pmix_info_t info[], size_t ninfo, pmix_ptl_cbfu
             } else if (PMIX_CHECK_KEY(&info[n], PMIX_BIND_REQUIRED)) {
                 pmix_bind_progress_thread_reqd = PMIX_INFO_TRUE(&info[n]);
             } else {
-                pmix_iof_check_flags(&info[n], &pmix_globals.iof_flags);
+                pmix_iof_check_flags(&info[n], &flags);
             }
         }
     }
@@ -343,7 +342,7 @@ int pmix_rte_init(uint32_t type, pmix_info_t info[], size_t ninfo, pmix_ptl_cbfu
     pmix_pointer_array_init(&pmix_globals.iof_requests, 128, INT_MAX, 128);
     /* setup the stdin forwarding target list */
     PMIX_CONSTRUCT(&pmix_globals.stdin_targets, pmix_list_t);
-    memset(&pmix_globals.iof_flags, 0, sizeof(pmix_iof_flags_t));
+    memcpy(&pmix_globals.iof_flags, &flags, sizeof(pmix_iof_flags_t));
 
     /* Setup client verbosities as all procs are allowed to
      * access client APIs */
@@ -440,28 +439,6 @@ int pmix_rte_init(uint32_t type, pmix_info_t info[], size_t ninfo, pmix_ptl_cbfu
         }
     }
 
-    /* the choice of modules to use when communicating with a peer
-     * will be done by the individual init functions and at the
-     * time of connection to that peer */
-
-    ret = pmix_mca_base_framework_open(&pmix_psquash_base_framework,
-                                       PMIX_MCA_BASE_OPEN_DEFAULT);
-    if (PMIX_SUCCESS != ret) {
-        error = "pmix_psquash_base_open";
-        goto return_error;
-    }
-
-    if (PMIX_SUCCESS != (ret = pmix_psquash_base_select())) {
-        error = "pmix_psquash_base_select";
-        goto return_error;
-    }
-
-    ret = pmix_psquash.init();
-    if (PMIX_SUCCESS != ret) {
-        error = "psquash_init";
-        goto return_error;
-    }
-
     /* open the bfrops and select the active plugins */
     ret = pmix_mca_base_framework_open(&pmix_bfrops_base_framework,
                                        PMIX_MCA_BASE_OPEN_DEFAULT);
@@ -552,31 +529,6 @@ int pmix_rte_init(uint32_t type, pmix_info_t info[], size_t ninfo, pmix_ptl_cbfu
     }
     if (PMIX_SUCCESS != (ret = pmix_plog_base_select())) {
         error = "pmix_plog_base_select";
-        goto return_error;
-    }
-
-    /* open the pstrg framework */
-    ret = pmix_mca_base_framework_open(&pmix_pstrg_base_framework,
-                                       PMIX_MCA_BASE_OPEN_DEFAULT);
-    if (PMIX_SUCCESS != ret) {
-        error = "pmix_strg_base_open";
-        goto return_error;
-    }
-    if (PMIX_SUCCESS != (ret = pmix_pstrg_base_select())) {
-        error = "pmix_pstrg_base_select";
-        goto return_error;
-    }
-
-    /* open and initialize */
-    ret = pmix_mca_base_framework_open(&pmix_prm_base_framework, PMIX_MCA_BASE_OPEN_DEFAULT);
-    if (PMIX_SUCCESS != ret) {
-        error = "pmix_prm_base_open";
-        goto return_error;
-    }
-
-    ret = pmix_prm_base_select();
-    if (PMIX_SUCCESS != ret) {
-        error = "pmix_prm_base_select";
         goto return_error;
     }
 

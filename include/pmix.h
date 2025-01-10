@@ -38,7 +38,7 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
- * Copyright (c) 2021-2023 Nanook Consulting.  All rights reserved.
+ * Copyright (c) 2021-2024 Nanook Consulting  All rights reserved.
  * $COPYRIGHT$
  *
  * Additional copyrights may follow
@@ -1182,6 +1182,7 @@ PMIX_EXPORT const char* PMIx_Get_attribute_name(const char *attrstring);
 PMIX_EXPORT const char* PMIx_Link_state_string(pmix_link_state_t state);
 PMIX_EXPORT const char* PMIx_Device_type_string(pmix_device_type_t type);
 PMIX_EXPORT const char* PMIx_Value_comparison_string(pmix_value_cmp_t cmp);
+PMIX_EXPORT const char* PMIx_Group_operation_string(pmix_group_operation_t op);
 
 /* the following print statements return ALLOCATED strings
  * that the user must release when done */
@@ -1548,7 +1549,7 @@ PMIX_EXPORT pmix_status_t PMIx_Data_load(pmix_data_buffer_t *buffer,
 * @param buffer A pointer to the buffer into which the payload is to
 * be loaded.
 *
-* @param payload A pointer to the pmix_byte_object_t .containing the
+* @param payload A pointer to the pmix_byte_object_t containing the
 * desired payload
 *
 * @retval PMIX_SUCCESS The request was successfully completed
@@ -1658,7 +1659,7 @@ PMIX_EXPORT bool PMIx_Check_nspace(const char *key1, const char *key2);
 PMIX_EXPORT bool PMIx_Nspace_invalid(const char *nspace);
 
 /* load a process ID struct */
-PMIX_EXPORT void PMIx_Load_procid(pmix_proc_t *p, 
+PMIX_EXPORT void PMIx_Load_procid(pmix_proc_t *p,
                                   const char *ns,
                                   pmix_rank_t rk);
 
@@ -2111,6 +2112,14 @@ PMIX_EXPORT pmix_status_t PMIx_Info_list_add(void *ptr,
                                              const void *value,
                                              pmix_data_type_t type);
 
+PMIX_EXPORT pmix_status_t PMIx_Info_list_add_value(void *ptr,
+                                                   const char *key,
+                                                   const pmix_value_t *value);
+
+PMIX_EXPORT pmix_status_t PMIx_Info_list_add_value_unique(void *ptr,
+                                                          const char *key,
+                                                          const pmix_value_t *value);
+
 PMIX_EXPORT pmix_status_t PMIx_Info_list_prepend(void *ptr,
                                                  const char *key,
                                                  const void *value,
@@ -2138,6 +2147,9 @@ PMIX_EXPORT void PMIx_Info_list_release(void *ptr);
  * on the list. A return of NULL indicates the end of the list
  */
 PMIX_EXPORT pmix_info_t* PMIx_Info_list_get_info(void *ptr, void *prev, void **next);
+
+/* get the size of the info list - i.e., the number of current entries on it */
+PMIX_EXPORT size_t PMIx_Info_list_get_size(void *ptr);
 
 #endif
 

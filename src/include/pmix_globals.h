@@ -349,6 +349,7 @@ typedef struct {
     size_t num_waiting;    // number of local procs waiting for debugger attach/release
     bool all_registered;   // all local ranks have been defined
     bool version_stored;   // the version string used by this nspace has been stored
+    bool job_info_recvd;   // job-level info has been received
     pmix_buffer_t *jobbkt; // packed version of jobinfo
     size_t ndelivered;     // count of #local clients that have received the jobinfo
     size_t nfinalized;     // count of #local clients that have finalized
@@ -453,6 +454,9 @@ typedef struct pmix_peer_t {
     int commit_cnt;
     pmix_epilog_t epilog; /**< things to be performed upon
                                termination of this peer */
+    uint32_t dyn_tags_start; // lower limit of valid tags for sendrecvs to this peer
+    uint32_t dyn_tags_current; // current tag for sendrecvs to this peer
+    uint32_t dyn_tags_end; // upper limit of valid tags for sendrecvs to this peer
 } pmix_peer_t;
 PMIX_CLASS_DECLARATION(pmix_peer_t);
 
@@ -465,14 +469,13 @@ typedef struct {
     size_t remote_id;
     pmix_proc_t *procs;
     size_t nprocs;
+    pmix_iof_flags_t flags;
     pmix_iof_channel_t channels;
     pmix_iof_cbfunc_t cbfunc;
     pmix_hdlr_reg_cbfunc_t regcbfunc;
     void *cbdata;
 } pmix_iof_req_t;
 PMIX_CLASS_DECLARATION(pmix_iof_req_t);
-
-typedef void (*pmix_pstrg_query_cbfunc_t)(pmix_status_t status, pmix_list_t *results, void *cbdata);
 
 /* caddy for query requests */
 typedef struct {
@@ -498,7 +501,6 @@ typedef struct {
     pmix_release_cbfunc_t relcbfunc;
     pmix_credential_cbfunc_t credcbfunc;
     pmix_validation_cbfunc_t validcbfunc;
-    pmix_pstrg_query_cbfunc_t stqcbfunc;
     void *cbdata;
 } pmix_query_caddy_t;
 PMIX_CLASS_DECLARATION(pmix_query_caddy_t);
@@ -506,6 +508,7 @@ PMIX_CLASS_DECLARATION(pmix_query_caddy_t);
 typedef struct {
     pmix_list_item_t super;
     char *grpid;
+    size_t ctxid;
     pmix_proc_t *members;
     size_t nmbrs;
 } pmix_group_t;
@@ -543,6 +546,7 @@ typedef struct {
     pmix_info_t *info;      // array of info structs
     size_t ninfo;           // number of info structs in array
     pmix_list_t grpinfo;    // list of group info to be distributed
+    int grpop;              // the group operation being tracked
     pmix_collect_t collect_type; // whether or not data is to be returned at completion
     pmix_modex_cbfunc_t modexcbfunc;
     pmix_op_cbfunc_t op_cbfunc;
@@ -700,6 +704,7 @@ typedef struct {
     pmix_status_t status;
     pmix_proc_t source;
     pmix_data_range_t range;
+    bool staylocal;  // do not pass up to host environment
     /* For notification, we use the targets field to track
      * any custom range of procs that are to receive the
      * event.
