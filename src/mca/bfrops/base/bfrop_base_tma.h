@@ -12,7 +12,7 @@
  * Copyright (c) 2015-2020 Intel, Inc.  All rights reserved.
  * Copyright (c) 2019      Mellanox Technologies, Inc.
  *                         All rights reserved.
- * Copyright (c) 2021-2023 Nanook Consulting.  All rights reserved.
+ * Copyright (c) 2021-2024 Nanook Consulting  All rights reserved.
  * Copyright (c) 2022      IBM Corporation.  All rights reserved.
  * Copyright (c) 2022-2023 Triad National Security, LLC. All rights reserved.
  * $COPYRIGHT$
@@ -140,6 +140,36 @@ pmix_status_t pmix_bfrops_base_tma_copy_payload(pmix_buffer_t *dest,
     memcpy(ptr, src->unpack_ptr, to_copy);
     dest->bytes_used += to_copy;
     dest->pack_ptr += to_copy;
+    return PMIX_SUCCESS;
+}
+
+static inline
+pmix_status_t pmix_bfrops_base_tma_embed_payload(pmix_buffer_t *dest,
+                                                 pmix_byte_object_t *src,
+                                                 pmix_tma_t *tma)
+{
+    char *ptr;
+
+    /* deal with buffer type */
+    if (NULL == dest->base_ptr) {
+        /* destination buffer is empty - derive src buffer type */
+        dest->type = pmix_bfrops_globals.default_type;
+    }
+
+    /* if the src is empty, then there is
+     * nothing to do */
+    if (NULL == src->bytes) {
+        return PMIX_SUCCESS;
+    }
+
+    /* extend the dest if necessary */
+    if (NULL == (ptr = pmix_bfrops_base_tma_buffer_extend(dest, src->size, tma))) {
+        PMIX_ERROR_LOG(PMIX_ERR_OUT_OF_RESOURCE);
+        return PMIX_ERR_OUT_OF_RESOURCE;
+    }
+    memcpy(ptr, src->bytes, src->size);
+    dest->bytes_used += src->size;
+    dest->pack_ptr += src->size;
     return PMIX_SUCCESS;
 }
 
@@ -372,7 +402,7 @@ void pmix_bfrops_base_tma_proc_free(pmix_proc_t *p,
                                     size_t n,
                                     pmix_tma_t *tma)
 {
-    if (NULL != p) {
+    if (NULL != p && 0 < n) {
         for (size_t m = 0; m < n; m++) {
             pmix_bfrops_base_tma_proc_destruct(&p[m], tma);
         }
@@ -441,7 +471,7 @@ void pmix_bfrops_base_tma_proc_info_free(pmix_proc_info_t *p,
                                          size_t n,
                                          pmix_tma_t *tma)
 {
-    if (NULL != p) {
+    if (NULL != p && 0 < n) {
         for (size_t m = 0; m < n; m++) {
             pmix_bfrops_base_tma_proc_info_destruct(&p[m], tma);
         }
@@ -600,7 +630,7 @@ void pmix_bfrops_base_tma_info_free(pmix_info_t *p,
                                     size_t n,
                                     pmix_tma_t *tma)
 {
-    if (NULL != p) {
+    if (NULL != p && 0 < n) {
         for (size_t m = 0; m < n; m++) {
             pmix_bfrops_base_tma_info_destruct(&p[m], tma);
         }
@@ -1815,7 +1845,7 @@ void pmix_bfrops_base_tma_query_free(pmix_query_t *p,
                                      size_t n,
                                      pmix_tma_t *tma)
 {
-    if (NULL != p) {
+    if (NULL != p && 0 < n) {
         for (size_t m = 0; m < n; m++) {
             pmix_bfrops_base_tma_query_destruct(&p[m], tma);
         }
@@ -1884,7 +1914,7 @@ void pmix_bfrops_base_tma_pdata_free(pmix_pdata_t *p,
                                      size_t n,
                                      pmix_tma_t *tma)
 {
-    if (NULL != p) {
+    if (NULL != p && 0 < n) {
         for (size_t m = 0; m < n; m++) {
             pmix_bfrops_base_tma_pdata_destruct(&p[m], tma);
         }
@@ -1912,7 +1942,7 @@ void pmix_bfrops_base_tma_app_destruct(pmix_app_t *p,
         pmix_tma_free(tma, p->cwd);
         p->cwd = NULL;
     }
-    if (NULL != p->info) {
+    if (NULL != p->info && 0 < p->ninfo) {
         pmix_bfrops_base_tma_info_free(p->info, p->ninfo, tma);
         p->info = NULL;
         p->ninfo = 0;
@@ -1958,7 +1988,7 @@ void pmix_bfrops_base_tma_app_free(pmix_app_t *p,
                                    size_t n,
                                    pmix_tma_t *tma)
 {
-    if (NULL != p) {
+    if (NULL != p && 0 < n) {
         for (size_t m = 0; m < n; m++) {
             pmix_bfrops_base_tma_app_destruct(&p[m], tma);
         }
@@ -2028,7 +2058,7 @@ void pmix_bfrops_base_tma_regattr_free(pmix_regattr_t *p,
                                        size_t n,
                                        pmix_tma_t *tma)
 {
-    if (NULL != p) {
+    if (NULL != p && 0 < n) {
         for (size_t m = 0; m < n; m++) {
             pmix_bfrops_base_tma_regattr_destruct(&p[m], tma);
         }
@@ -2409,7 +2439,7 @@ void pmix_bfrops_base_tma_proc_stats_free(pmix_proc_stats_t *p,
                                           size_t n,
                                           pmix_tma_t *tma)
 {
-    if (NULL != p) {
+    if (NULL != p && 0 < n) {
         for (size_t m = 0; m < n; m++) {
             pmix_bfrops_base_tma_proc_stats_destruct(&p[m], tma);
         }
@@ -2501,7 +2531,7 @@ void pmix_bfrops_base_tma_disk_stats_free(pmix_disk_stats_t *p,
                                           size_t n,
                                           pmix_tma_t *tma)
 {
-    if (NULL != p) {
+    if (NULL != p && 0 < n) {
         for (size_t m = 0; m < n; m++) {
             pmix_bfrops_base_tma_disk_stats_destruct(&p[m], tma);
         }
@@ -2571,7 +2601,7 @@ void pmix_bfrops_base_tma_net_stats_free(pmix_net_stats_t *p,
                                          size_t n,
                                          pmix_tma_t *tma)
 {
-    if (NULL != p) {
+    if (NULL != p && 0 < n) {
         for (size_t m = 0; m < n; m++) {
             pmix_bfrops_base_tma_net_stats_destruct(&p[m], tma);
         }
@@ -2678,7 +2708,7 @@ void pmix_bfrops_base_tma_node_stats_free(pmix_node_stats_t *p,
                                           size_t n,
                                           pmix_tma_t *tma)
 {
-    if (NULL != p) {
+    if (NULL != p && 0 < n) {
         for (size_t m = 0; m < n; m++) {
             pmix_bfrops_base_tma_node_stats_destruct(&p[m], tma);
         }

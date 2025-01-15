@@ -8,7 +8,7 @@
  * Copyright (c) 2016-2020 IBM Corporation.  All rights reserved.
  * Copyright (c) 2016-2018 Research Organization for Information Science
  *                         and Technology (RIST).  All rights reserved.
- * Copyright (c) 2021-2024 Nanook Consulting  All rights reserved.
+ * Copyright (c) 2021-2025 Nanook Consulting  All rights reserved.
  * $COPYRIGHT$
  */
 
@@ -183,7 +183,6 @@ typedef struct {
     pmix_list_t gdata;  // cache of data given to me for passing to all clients
     char **genvars;     // argv array of envars given to me for passing to all clients
     pmix_list_t events; // list of pmix_regevents_info_t registered events
-    char **failedgrps;    // group IDs that failed to construct
     pmix_list_t iof;    // IO to be forwarded to clients
     pmix_list_t iof_residuals;  // leftover bytes waiting for newline
     pmix_list_t psets;  // list of known psets and memberships
@@ -192,6 +191,7 @@ typedef struct {
     char *tmpdir;             // temporary directory for this server
     char *system_tmpdir;      // system tmpdir
     bool fence_localonly_opt; // local-only fence optimization
+    pmix_list_t grp_collectives;  // group-op collectives
     // verbosity for server get operations
     int get_output;
     int get_verbose;
@@ -272,7 +272,14 @@ PMIX_EXPORT pmix_status_t pmix_server_unpublish(pmix_peer_t *peer, pmix_buffer_t
 
 PMIX_EXPORT pmix_status_t pmix_server_spawn(pmix_peer_t *peer, pmix_buffer_t *buf,
                                             pmix_spawn_cbfunc_t cbfunc, void *cbdata);
-PMIX_EXPORT void pmix_server_spawn_parser(pmix_peer_t *peer, pmix_setup_caddy_t *cd);
+PMIX_EXPORT void pmix_server_spawn_parser(pmix_peer_t *peer,
+                                          pmix_iof_channel_t *channels,
+                                          pmix_iof_flags_t *flags,
+                                          pmix_info_t *info,
+                                          size_t ninfo);
+PMIX_EXPORT pmix_status_t pmix_server_process_iof(pmix_setup_caddy_t *cd,
+                                                  char nspace[]);
+
 PMIX_EXPORT void pmix_server_spcbfunc(pmix_status_t status, char nspace[], void *cbdata);
 
 PMIX_EXPORT pmix_status_t pmix_server_connect(pmix_server_caddy_t *cd, pmix_buffer_t *buf,
@@ -323,9 +330,8 @@ PMIX_EXPORT pmix_status_t pmix_server_iofstdin(pmix_peer_t *peer, pmix_buffer_t 
 PMIX_EXPORT pmix_status_t pmix_server_iofdereg(pmix_peer_t *peer, pmix_buffer_t *buf,
                                                pmix_op_cbfunc_t cbfunc, void *cbdata);
 
-PMIX_EXPORT pmix_status_t pmix_server_grpconstruct(pmix_server_caddy_t *cd, pmix_buffer_t *buf);
-
-PMIX_EXPORT pmix_status_t pmix_server_grpdestruct(pmix_server_caddy_t *cd, pmix_buffer_t *buf);
+PMIX_EXPORT pmix_status_t pmix_server_group(pmix_server_caddy_t *cd, pmix_buffer_t *buf,
+                                            pmix_group_operation_t op);
 
 PMIX_EXPORT pmix_status_t pmix_server_event_recvd_from_client(pmix_peer_t *peer, pmix_buffer_t *buf,
                                                               pmix_op_cbfunc_t cbfunc,
@@ -368,10 +374,6 @@ PMIX_EXPORT pmix_status_t pmix_server_resblk(pmix_server_caddy_t *cd,
 PMIX_EXPORT pmix_status_t pmix_server_session_ctrl(pmix_server_caddy_t *cd,
                                                    pmix_buffer_t *buf,
                                                    pmix_info_cbfunc_t cbfunc);
-
-PMIX_EXPORT void pmix_server_query_cbfunc(pmix_status_t status,
-                                          pmix_info_t *info, size_t ninfo, void *cbdata,
-                                          pmix_release_cbfunc_t release_fn, void *release_cbdata);
 
 PMIX_EXPORT extern pmix_server_module_t pmix_host_server;
 PMIX_EXPORT extern pmix_server_globals_t pmix_server_globals;

@@ -4,7 +4,7 @@
  *                         All rights reserved.
  * Copyright (c) 2016-2020 Intel, Inc.  All rights reserved.
  * Copyright (c) 2018      IBM Corporation.  All rights reserved.
- * Copyright (c) 2021-2023 Nanook Consulting.  All rights reserved.
+ * Copyright (c) 2021-2024 Nanook Consulting  All rights reserved.
  * Copyright (c) 2022      Triad National Security, LLC. All rights reserved.
  * $COPYRIGHT$
  *
@@ -248,33 +248,29 @@ typedef pmix_status_t (*pmix_gds_base_module_store_fn_t)(const pmix_proc_t *proc
  * avoid repeatedly storing pmix_kval_t's for multiple local procs
  * from the same nspace.
  *
- * ranks - a list of pmix_rank_info_t for the local ranks from this
- *         nspace - this is to be used to filter the cbs list
+ * buff - packed modex data collected across the operation
  *
  * cbdata - pointer to modex callback data
  *
- * bo - pointer to the byte object containing the data
- *
  */
-typedef pmix_status_t (*pmix_gds_base_module_store_modex_fn_t)(struct pmix_namespace_t *ns,
-                                                               pmix_buffer_t *buff, void *cbdata);
+typedef pmix_status_t (*pmix_gds_base_module_store_modex_fn_t)(pmix_buffer_t *buff, void *cbdata);
 
 /**
  * define a convenience macro for storing modex byte objects
  *
  * r - return status code
  *
- * n - pointer to the pmix_namespace_t this blob is to be stored for
- *
- * b - pointer to pmix_byte_object_t containing the data
+ * b - pointer to pmix_buffer_t containing the data
  *
  * t - pointer to the modex server tracker
  */
-#define PMIX_GDS_STORE_MODEX(r, n, b, t)                                                          \
-    do {                                                                                          \
-        pmix_output_verbose(1, pmix_gds_base_output, "[%s:%d] GDS STORE MODEX WITH %s", __FILE__, \
-                            __LINE__, (n)->compat.gds->name);                                     \
-        (r) = (n)->compat.gds->store_modex((struct pmix_namespace_t *) n, b, t);                  \
+#define PMIX_GDS_STORE_MODEX(r, b, t)                                       \
+    do {                                                                    \
+        pmix_gds_base_module_t *_g = pmix_globals.mypeer->nptr->compat.gds; \
+        pmix_output_verbose(1, pmix_gds_base_output,                        \
+                            "[%s:%d] GDS STORE MODEX WITH %s", __FILE__,    \
+                            __LINE__, _g->name);                            \
+        (r) = _g->store_modex(b, t);                                        \
     } while (0)
 
 typedef pmix_status_t (*pmix_gds_base_module_mark_modex_complete_fn_t)(struct pmix_peer_t *peer,
@@ -282,7 +278,7 @@ typedef pmix_status_t (*pmix_gds_base_module_mark_modex_complete_fn_t)(struct pm
                                                                        pmix_buffer_t *buff);
 #define PMIX_GDS_MARK_MODEX_COMPLETE(r, p, l, b)                            \
     do {                                                                    \
-        pmix_gds_base_module_t *_g = (p)->nptr->compat.gds;                 \
+        pmix_gds_base_module_t *_g = pmix_globals.mypeer->nptr->compat.gds; \
         pmix_output_verbose(1, pmix_gds_base_output,                        \
                             "[%s:%d] GDS MARK MODEX COMPLETE WITH %s",      \
                             __FILE__, __LINE__, _g->name);                  \
@@ -292,7 +288,7 @@ typedef pmix_status_t (*pmix_gds_base_module_mark_modex_complete_fn_t)(struct pm
 typedef pmix_status_t (*pmix_gds_base_module_recv_modex_complete_fn_t)(pmix_buffer_t *buff);
 #define PMIX_GDS_RECV_MODEX_COMPLETE(r, p, b)                               \
     do {                                                                    \
-        pmix_gds_base_module_t *_g = (p)->nptr->compat.gds;                 \
+        pmix_gds_base_module_t *_g = pmix_globals.mypeer->nptr->compat.gds; \
         pmix_output_verbose(1, pmix_gds_base_output,                        \
                             "[%s:%d] GDS RECV MODEX COMPLETE WITH %s",      \
                             __FILE__, __LINE__, _g->name);                  \

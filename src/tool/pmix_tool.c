@@ -8,7 +8,7 @@
  * Copyright (c) 2016      Mellanox Technologies, Inc.
  *                         All rights reserved.
  * Copyright (c) 2016-2021 IBM Corporation.  All rights reserved.
- * Copyright (c) 2021-2023 Nanook Consulting.  All rights reserved.
+ * Copyright (c) 2021-2024 Nanook Consulting  All rights reserved.
  * $COPYRIGHT$
  *
  * Additional copyrights may follow
@@ -53,15 +53,14 @@
 #include "src/client/pmix_client_ops.h"
 #include "src/common/pmix_attributes.h"
 #include "src/common/pmix_iof.h"
+#include "src/common/pmix_pfexec.h"
 #include "src/hwloc/pmix_hwloc.h"
 #include "src/include/pmix_globals.h"
 #include "src/mca/bfrops/base/base.h"
 #include "src/mca/gds/base/base.h"
-#include "src/mca/pfexec/base/base.h"
 #include "src/mca/pmdl/base/base.h"
 #include "src/mca/pnet/base/base.h"
 #include "src/mca/psec/psec.h"
-#include "src/mca/pstrg/base/base.h"
 #include "src/mca/ptl/base/base.h"
 #include "src/runtime/pmix_progress_threads.h"
 #include "src/runtime/pmix_rte.h"
@@ -438,7 +437,7 @@ static void notification_fn(size_t evhdlr_registration_id, pmix_status_t status,
 PMIX_EXPORT int PMIx_tool_init(pmix_proc_t *proc, pmix_info_t info[], size_t ninfo)
 {
     pmix_status_t rc;
-    char *evar, *nspace = NULL;
+    char *evar, *nspace = NULL, *suri;
     pmix_rank_t rank = PMIX_RANK_UNDEF;
     bool do_not_connect = false;
     bool nspace_given = false;
@@ -460,6 +459,7 @@ PMIX_EXPORT int PMIx_tool_init(pmix_proc_t *proc, pmix_info_t info[], size_t nin
     pmix_status_t code;
     pmix_value_t value;
     bool outputio = true;
+    pmix_kval_t *kptr;
 
     PMIX_ACQUIRE_THREAD(&pmix_global_lock);
 
@@ -765,8 +765,22 @@ PMIX_EXPORT int PMIx_tool_init(pmix_proc_t *proc, pmix_info_t info[], size_t nin
     } else {
         /* connect to the server */
         rc = pmix_ptl.connect_to_peer((struct pmix_peer_t *) pmix_client_globals.myserver, info,
-                                      ninfo);
-        if (PMIX_SUCCESS != rc) {
+                                      ninfo, &suri);
+        if (PMIX_SUCCESS == rc) {
+            /* store the URI for subsequent lookups */
+            PMIX_KVAL_NEW(kptr, PMIX_SERVER_URI);
+            kptr->value->type = PMIX_STRING;
+            pmix_asprintf(&kptr->value->data.string, "%s.%u;%s",
+                          pmix_client_globals.myserver->info->pname.nspace,
+                          pmix_client_globals.myserver->info->pname.rank, suri);
+            free(suri);
+            PMIX_GDS_STORE_KV(rc, pmix_globals.mypeer, &pmix_globals.myid, PMIX_INTERNAL, kptr);
+            PMIX_RELEASE(kptr); // maintain accounting
+            if (PMIX_SUCCESS != rc) {
+                PMIX_ERROR_LOG(rc);
+                return rc;
+            }
+        } else {
             /* if connection wasn't optional, then error out */
             if (!connect_optional) {
                 PMIX_RELEASE_THREAD(&pmix_global_lock);
@@ -984,12 +998,8 @@ PMIX_EXPORT int PMIx_tool_init(pmix_proc_t *proc, pmix_info_t info[], size_t nin
     if (PMIX_PEER_IS_LAUNCHER(pmix_globals.mypeer) ||
         PMIX_PEER_IS_SCHEDULER(pmix_globals.mypeer)) {
         /* setup the fork/exec framework */
-        rc = pmix_mca_base_framework_open(&pmix_pfexec_base_framework,
-                                          PMIX_MCA_BASE_OPEN_DEFAULT);
+        rc = pmix_pfexec_base_open();
         if (PMIX_SUCCESS != rc) {
-            return rc;
-        }
-        if (PMIX_SUCCESS != (rc = pmix_pfexec_base_select())) {
             return rc;
         }
 
@@ -1443,7 +1453,7 @@ PMIX_EXPORT pmix_status_t PMIx_tool_finalize(void)
     struct timeval tv = {5, 0};
     int n;
     pmix_peer_t *peer;
-    pmix_pfexec_child_t *child;
+    pmix_pfexec_child_t *child, *nxt;
     pmix_lock_t lock;
     pmix_event_t ev;
 
@@ -1500,7 +1510,8 @@ PMIX_EXPORT pmix_status_t PMIx_tool_finalize(void)
         pmix_output_verbose(2, pmix_globals.debug_output, "pmix:tool finalize sync received");
     }
 
-    if (PMIX_PEER_IS_LAUNCHER(pmix_globals.mypeer)) {
+    if (PMIX_PEER_IS_LAUNCHER(pmix_globals.mypeer) ||
+        PMIX_PEER_IS_SERVER(pmix_globals.mypeer)) {
         /* if we have launched children, then we need to cleanly
          * terminate them - do this before stopping our progress
          * thread as we need it for terminating procs */
@@ -1508,9 +1519,13 @@ PMIX_EXPORT pmix_status_t PMIx_tool_finalize(void)
             pmix_event_del(pmix_pfexec_globals.handler);
             pmix_pfexec_globals.active = false;
         }
-        PMIX_LIST_FOREACH (child, &pmix_pfexec_globals.children, pmix_pfexec_child_t) {
-            pmix_pfexec.kill_proc(&child->proc);
+        PMIX_LIST_FOREACH_SAFE (child, nxt, &pmix_pfexec_globals.children, pmix_pfexec_child_t) {
+            PMIX_CONSTRUCT_LOCK(&lock);
+            PMIX_PFEXEC_KILL(&child->proc, &lock);
+            PMIX_WAIT_THREAD(&lock);
+            PMIX_DESTRUCT_LOCK(&lock);
         }
+        pmix_pfexec_base_close();
     }
 
     /* wait here until all active events have been processed */
@@ -1557,10 +1572,8 @@ PMIX_EXPORT pmix_status_t PMIx_tool_finalize(void)
     PMIX_LIST_DESTRUCT(&pmix_server_globals.events);
     PMIX_LIST_DESTRUCT(&pmix_server_globals.iof);
 
-    (void) pmix_mca_base_framework_close(&pmix_pfexec_base_framework);
     (void) pmix_mca_base_framework_close(&pmix_pmdl_base_framework);
     (void) pmix_mca_base_framework_close(&pmix_pnet_base_framework);
-    (void) pmix_mca_base_framework_close(&pmix_pstrg_base_framework);
 
     pmix_rte_finalize();
     if (NULL != pmix_globals.mypeer) {
@@ -1596,6 +1609,7 @@ static void retry_attach(int sd, short args, void *cbdata)
     pmix_peer_t *peer;
     size_t n;
     pmix_status_t rc;
+    char *suri;
     PMIX_HIDE_UNUSED_PARAMS(sd, args);
 
     PMIX_ACQUIRE_OBJECT(cb);
@@ -1620,7 +1634,7 @@ static void retry_attach(int sd, short args, void *cbdata)
     peer->nptr->compat.type = pmix_globals.mypeer->nptr->compat.type;
     peer->nptr->compat.gds = pmix_globals.mypeer->nptr->compat.gds;
 
-    cb->status = pmix_ptl.connect_to_peer((struct pmix_peer_t *) peer, cb->info, cb->ninfo);
+    cb->status = pmix_ptl.connect_to_peer((struct pmix_peer_t *) peer, cb->info, cb->ninfo, &suri);
 
     if (PMIX_SUCCESS == cb->status) {
         /* return the name */
@@ -1654,6 +1668,18 @@ static void retry_attach(int sd, short args, void *cbdata)
                 PMIX_ERROR_LOG(rc);
             }
             PMIX_RELEASE(kptr); // maintain accounting
+            /* store the URI for subsequent lookups */
+            PMIX_KVAL_NEW(kptr, PMIX_SERVER_URI);
+            kptr->value->type = PMIX_STRING;
+            pmix_asprintf(&kptr->value->data.string, "%s.%u;%s",
+                          peer->info->pname.nspace,
+                          peer->info->pname.rank, suri);
+            free(suri);
+            PMIX_GDS_STORE_KV(rc, pmix_globals.mypeer, &pmix_globals.myid, PMIX_INTERNAL, kptr);
+            PMIX_RELEASE(kptr); // maintain accounting
+            if (PMIX_SUCCESS != rc) {
+                PMIX_ERROR_LOG(rc);
+            }
         }
 
     } else {
