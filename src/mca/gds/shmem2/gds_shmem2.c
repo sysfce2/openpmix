@@ -5,7 +5,7 @@
  *                         and Technology (RIST).  All rights reserved.
  * Copyright (c) 2018-2020 Mellanox Technologies, Inc.
  *                         All rights reserved.
- * Copyright (c) 2022-2024 Nanook Consulting  All rights reserved.
+ * Copyright (c) 2022-2025 Nanook Consulting  All rights reserved.
  * Copyright (c) 2022-2024 Triad National Security, LLC. All rights reserved.
  * $COPYRIGHT$
  *
@@ -1538,15 +1538,6 @@ out:
     return rc;
 }
 
-static inline int
-dictionary_nelems(
-    const pmix_regattr_input_t *dict
-) {
-    int i = 0;
-    for ( ; UINT32_MAX != dict[i].index; ++i) { }
-    return i;
-}
-
 static inline pmix_status_t
 pack_server_keyindex_info(
     pmix_gds_shmem2_job_t *job,
@@ -1577,12 +1568,11 @@ pack_server_keyindex_info(
         PMIX_DESTRUCT(&kv);
 
         // Pack the size of the server's keyindex table.
-        const int tabsize = dictionary_nelems(pmix_dictionary);
         PMIX_CONSTRUCT(&kv, pmix_kval_t);
         kv.key = strdup(SHMEM2_KIDX_TAB_SIZE_KEY);
         kv.value = (pmix_value_t *)calloc(1, sizeof(pmix_value_t));
         kv.value->type = PMIX_UINT32;
-        kv.value->data.uint32 = (uint32_t)tabsize;
+        kv.value->data.uint32 = (uint32_t)PMIX_INDEX_BOUNDARY;
 
         PMIX_BFROPS_PACK(rc, peer, buffer, &kv, 1, PMIX_KVAL);
         if (PMIX_UNLIKELY(PMIX_SUCCESS != rc)) {
@@ -1591,7 +1581,7 @@ pack_server_keyindex_info(
         }
         PMIX_DESTRUCT(&kv);
 
-        for (int i = 0; i < tabsize; ++i) {
+        for (int i = 0; i < PMIX_INDEX_BOUNDARY; ++i) {
             const pmix_regattr_input_t *p = &pmix_dictionary[i];
             PMIX_GDS_SHMEM2_VVVOUT(
                 "%s:keyindex=(index=%zd, type=%zd, name=%s string=%s, description=%s)",
@@ -1817,19 +1807,6 @@ unpack_shmem2_connection_info(
     return rc;
 }
 
-static inline int
-parray_nelem(
-    pmix_pointer_array_t *array
-) {
-    int i = 0;
-    for ( ; i < array->size; ++i) {
-        if (!pmix_pointer_array_get_item(array, i)) {
-            break;
-        }
-    }
-    return i;
-}
-
 static inline void
 regattr_list_free(
     pmix_regattr_input_t *ra,
@@ -1899,7 +1876,7 @@ client_update_global_keyindex_if_necessary(
             return rc;
         }
 
-       pmix_pointer_array_set_item(tmpindex.table, (int)tmpindex.next_id, ra);
+        pmix_pointer_array_set_item(tmpindex.table, (int)tmpindex.next_id, ra);
         ra->index = tmpindex.next_id;
         tmpindex.next_id += 1;
 
@@ -1918,9 +1895,6 @@ client_update_global_keyindex_if_necessary(
     // just yet
     for (i = 0; i < PMIX_INDEX_BOUNDARY; ++i) {
         ra = (pmix_regattr_input_t*)&pmix_dictionary[i];
-        if (UINT32_MAX == ra->index) {
-            break;
-        }
         // see if this entry is already present in the new keyindex
         found = false;
         for (m=0; m < tmpindex.table->size; m++) {
@@ -2079,7 +2053,9 @@ unpack_srv_kindx_info(
             // size of the server's dictionary
             assert(kv.value->type == PMIX_UINT32);
             tabsize = kv.value->data.uint32;
-            tmpsrvdict = calloc(tabsize, sizeof(*tmpsrvdict));
+            if (NULL == tmpsrvdict) {
+                tmpsrvdict = calloc(tabsize, sizeof(*tmpsrvdict));
+            }
             if (NULL == tmpsrvdict) {
                 rc = PMIX_ERR_NOMEM;
                 PMIX_ERROR_LOG(rc);
@@ -2627,16 +2603,15 @@ store_job_info(
  * Returns size required to store modex data.
  */
 static pmix_gds_shmem2_modex_info_t
-get_modex_sizing_data(
-    const pmix_gds_shmem2_modex_ctx_t *mctx
-) {
+get_modex_sizing_data(const pmix_buffer_t *buff)
+{
     const size_t kval_size = sizeof(pmix_kval_t);
     // The default values if not provided with modex size info. More fluff than
     // in other places because this calculation is more imprecise. In many ways
     // this is okay because mmap() implements demand paging.
     float fluff = 5.0;
     // Multiplier to fudge compression factor. zlib max compression is 5:1.
-    size_t segment_size = mctx->buff_size * 5;
+    size_t segment_size = buff->bytes_used * 5;
     // Get an estimate on the number of kvals we need to store.
     const size_t nkvals = (segment_size / (float)kval_size) + kval_size;
     // Get the required hash table size based on number of kvals.
@@ -2660,14 +2635,27 @@ get_modex_sizing_data(
  * This gets called for each process participating in the modex.
  */
 static pmix_status_t
-server_store_modex_cb(
-    pmix_gds_base_ctx_t ctx,
-    pmix_proc_t *proc,
-    pmix_gds_modex_key_fmt_t key_fmt,
-    char **kmap,
-    pmix_buffer_t *pbkt
-) {
+server_store_modex_cb(pmix_proc_t *proc,
+                      pmix_buffer_t *pbkt)
+{
     pmix_status_t rc = PMIX_SUCCESS;
+    int32_t cnt;
+    pmix_kval_t kv;
+    pmix_gds_shmem2_job_t *job;
+    
+    rc = pmix_gds_shmem2_get_job_tracker(proc->nspace, false, &job);
+    if (PMIX_UNLIKELY(PMIX_SUCCESS != rc)) {
+        PMIX_ERROR_LOG(rc);
+        return rc;
+    }
+
+    if (NULL == pbkt) {
+        // Segment is ready for use.
+        pmix_gds_shmem2_set_status(
+            job, PMIX_GDS_SHMEM2_MODEX_ID, PMIX_GDS_SHMEM2_READY_FOR_USE
+        );
+        return PMIX_SUCCESS;
+    }
 
     PMIX_GDS_SHMEM2_VOUT(
         "%s:%s for namespace=%s", __func__,
@@ -2675,21 +2663,12 @@ server_store_modex_cb(
         proc->nspace
     );
 
-    pmix_gds_shmem2_job_t *job;
-    rc = pmix_gds_shmem2_get_job_tracker(proc->nspace, false, &job);
-    if (PMIX_UNLIKELY(PMIX_SUCCESS != rc)) {
-        PMIX_ERROR_LOG(rc);
-        return rc;
-    }
-
-    pmix_gds_shmem2_modex_ctx_t *mctx = (pmix_gds_shmem2_modex_ctx_t *)ctx;
-
     const bool attached = pmix_gds_shmem2_has_status(
         job, PMIX_GDS_SHMEM2_MODEX_ID, PMIX_GDS_SHMEM2_ATTACHED
     );
     if (!attached) {
         // Get the global packed buffer size from ctx.
-        pmix_gds_shmem2_modex_info_t minfo = get_modex_sizing_data(mctx);
+        pmix_gds_shmem2_modex_info_t minfo = get_modex_sizing_data(pbkt);
         // Create and attach to the shared-memory
         // segment that will back these data.
         rc = shmem2_segment_create_and_attach(
@@ -2708,58 +2687,48 @@ server_store_modex_cb(
     }
 
     pmix_hash_table_t *const ht = job->smmodex->hashtab;
-    pmix_tma_t *const tma = pmix_obj_get_tma(&ht->super);
     // This is data returned via the PMIx_Fence call when data collection was
     // requested, so it only contains REMOTE/GLOBAL data. The byte object
     // contains the rank followed by pmix_kval_ts.
-    pmix_kval_t *kv;
     // Unpack the values until we hit the end of the buffer.
     while (true) {
-        kv = PMIX_NEW(pmix_kval_t, tma);
-        if (PMIX_UNLIKELY(NULL == kv)) {
-            rc = PMIX_ERR_NOMEM;
-            PMIX_ERROR_LOG(rc);
-            break;
-        }
+        // it is okay to use a static variable here and construct it
+        // because we are NOT going to actually store the variable
+        // anywhere - the hash_store function COPIES it into an
+        // appropriately allocated object
+        PMIX_CONSTRUCT(&kv, pmix_kval_t);
 
-        rc = pmix_gds_base_modex_unpack_kval(key_fmt, pbkt, kmap, kv);
+        cnt = 1;
+        PMIX_BFROPS_UNPACK(rc, pmix_globals.mypeer, pbkt, &kv, &cnt, PMIX_KVAL);
+
         if (PMIX_SUCCESS != rc) {
+            PMIX_DESTRUCT(&kv);
             break;
         }
 
         const pmix_rank_t rank = proc->rank;
         // If the rank is undefined, then we store it on the remote table of
         // rank=0 as we know that rank must always exist.
-        if (PMIX_CHECK_KEY(kv, PMIX_QUALIFIED_VALUE)) {
+        if (PMIX_CHECK_KEY(&kv, PMIX_QUALIFIED_VALUE)) {
             rc = pmix_gds_shmem2_store_qualified(
-                ht, (PMIX_RANK_UNDEF == rank) ? 0 : rank, kv->value
+                ht, (PMIX_RANK_UNDEF == rank) ? 0 : rank, kv.value
             );
         }
         else {
             rc = pmix_hash_store(
-                ht, (PMIX_RANK_UNDEF == rank) ? 0 : rank, kv, NULL, 0, NULL
+                ht, (PMIX_RANK_UNDEF == rank) ? 0 : rank, &kv, NULL, 0, NULL
             );
         }
         if (PMIX_UNLIKELY(PMIX_SUCCESS != rc)) {
             PMIX_ERROR_LOG(rc);
+            PMIX_DESTRUCT(&kv);
             break;
         }
-        PMIX_DESTRUCT(kv);
+        PMIX_DESTRUCT(&kv);
     }
-    PMIX_DESTRUCT(kv);
 
     if (PMIX_ERR_UNPACK_READ_PAST_END_OF_BUFFER != rc) {
         PMIX_ERROR_LOG(rc);
-    }
-    else {
-        // Last process in modex?
-        if (--mctx->nprocs == 0) {
-            // Segment is ready for use.
-            pmix_gds_shmem2_set_status(
-                job, PMIX_GDS_SHMEM2_MODEX_ID, PMIX_GDS_SHMEM2_READY_FOR_USE
-            );
-        }
-        rc = PMIX_SUCCESS;
     }
     return rc;
 }
@@ -2770,29 +2739,16 @@ server_store_modex_cb(
  * remote procs, and we shall store it accordingly.
  */
 static pmix_status_t
-server_store_modex(
-    struct pmix_namespace_t *ns,
-    pmix_buffer_t *buff,
-    void *cbdata
-) {
+server_store_modex(pmix_buffer_t *buff,
+                   void *cbdata)
+{
     PMIX_GDS_SHMEM2_VVOUT_HERE();
-    pmix_namespace_t *const namespace = (pmix_namespace_t *)ns;
 
     PMIX_GDS_SHMEM2_VOUT(
-        "%s:%s for namespace=%s (nprocs=%zd, buff_size=%zd)", __func__,
-        PMIX_NAME_PRINT(&pmix_globals.myid), namespace->nspace,
-        (size_t)namespace->nprocs, buff->bytes_used
+        "%s:%s buff_size=%zd", __func__,
+        PMIX_NAME_PRINT(&pmix_globals.myid), buff->bytes_used
     );
-    // Cache modex info for the callbacks.
-    pmix_gds_shmem2_modex_ctx_t mctx = {
-        .buff_size = buff->bytes_used,
-        .nprocs = namespace->nprocs
-    };
-    pmix_gds_base_ctx_t ctx = (pmix_gds_base_ctx_t)&mctx;
-
-    return pmix_gds_base_store_modex(
-        ns, buff, ctx, server_store_modex_cb, cbdata
-    );
+    return pmix_gds_base_store_modex(buff, server_store_modex_cb, cbdata);
 }
 
 static pmix_status_t

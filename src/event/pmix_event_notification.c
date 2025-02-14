@@ -685,6 +685,11 @@ void pmix_invoke_local_event_hdlr(pmix_event_chain_t *chain)
     pmix_event_hdlr_t *evhdlr;
     pmix_status_t rc = PMIX_SUCCESS;
     bool found;
+    pmix_group_t *grp, *gp;
+    pmix_proc_t *members = NULL;
+    size_t n, nmembers = 0;
+    char *grpid = NULL;
+    size_t ctxid = SIZE_MAX;
 
     pmix_output_verbose(2, pmix_client_globals.event_output,
                         "%s invoke_local_event_hdlr for status %s",
@@ -722,6 +727,48 @@ void pmix_invoke_local_event_hdlr(pmix_event_chain_t *chain)
     }
     pmix_output_verbose(8, pmix_client_globals.event_output, "%s %s:%d",
                         PMIX_NAME_PRINT(&pmix_globals.myid), __FILE__, __LINE__);
+
+    /* if this is the "group_complete" event, then we need to add
+     * the group definition to our list of known groups */
+    if (PMIX_GROUP_CONSTRUCT_COMPLETE == chain->status) {
+        // find the group ID and membership
+        for (n = 0; n < chain->ninfo; n++) {
+            if (PMIX_CHECK_KEY(&chain->info[n], PMIX_GROUP_MEMBERSHIP)) {
+                members = (pmix_proc_t*)chain->info[n].value.data.darray->array;
+                nmembers = chain->info[n].value.data.darray->size;
+
+            } else if (PMIX_CHECK_KEY(&chain->info[n], PMIX_GROUP_ID)) {
+                grpid = chain->info[n].value.data.string;
+
+            } else if (PMIX_CHECK_KEY(&chain->info[n], PMIX_GROUP_CONTEXT_ID)) {
+                PMIX_VALUE_GET_NUMBER(rc, &chain->info[n].value, ctxid, size_t);
+                if (PMIX_SUCCESS != rc) {
+                    PMIX_ERROR_LOG(rc);
+                }
+            }
+        }
+        if (NULL != members && NULL != grpid) {
+            // see if we already know this group
+            grp = NULL;
+            PMIX_LIST_FOREACH(gp, &pmix_client_globals.groups, pmix_group_t) {
+                if (0 == strcmp(grpid, gp->grpid)) {
+                    grp = gp;
+                    break;
+                }
+            }
+            if (NULL == grp) {
+                // add the group
+                grp = PMIX_NEW(pmix_group_t);
+                PMIX_PROC_CREATE(grp->members, nmembers);
+                memcpy(grp->members, members, nmembers * sizeof(pmix_proc_t));
+                qsort(grp->members, nmembers, sizeof(pmix_proc_t), pmix_util_compare_proc);
+                grp->nmbrs = nmembers;
+                grp->grpid = strdup(grpid);
+                grp->ctxid = ctxid;
+                pmix_list_append(&pmix_client_globals.groups, &grp->super);
+            }
+        }
+    }
 
     /* if we registered a "first" handler, and it fits the given range,
      * then invoke it first */
@@ -939,10 +986,10 @@ static void _notify_client_event(int sd, short args, void *cbdata)
         /* check for caching instructions */
         for (n = 0; n < cd->ninfo; n++) {
             if (PMIX_CHECK_KEY(&cd->info[n], PMIX_EVENT_DO_NOT_CACHE)) {
-                if (PMIX_INFO_TRUE(&cd->info[n])) {
-                    holdcd = false;
-                }
-                break;
+                holdcd = !PMIX_INFO_TRUE(&cd->info[n]);
+
+            } else if (PMIX_CHECK_KEY(&cd->info[n], PMIX_EVENT_STAYS_LOCAL)) {
+                cd->staylocal = PMIX_INFO_TRUE(&cd->info[n]);
             }
         }
     }
@@ -1185,6 +1232,7 @@ static void _notify_client_event(int sd, short args, void *cbdata)
         }
         PMIX_LIST_DESTRUCT(&trk);
         if (PMIX_RANGE_LOCAL != cd->range &&
+            !cd->staylocal &&
             PMIX_CHECK_PROCID(&cd->source, &pmix_globals.myid)) {
             /* if we are the source, then we need to post this upwards as
              * well so the host RM can broadcast it as necessary */
@@ -1459,6 +1507,7 @@ PMIX_CLASS_INSTANCE(pmix_event_hdlr_t, pmix_list_item_t, sevcon, sevdes);
 static void accon(pmix_active_code_t *p)
 {
     p->nregs = 0;
+    p->peer = NULL;
 }
 PMIX_CLASS_INSTANCE(pmix_active_code_t, pmix_list_item_t, accon, NULL);
 

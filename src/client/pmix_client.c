@@ -8,7 +8,7 @@
  * Copyright (c) 2016-2017 Mellanox Technologies, Inc.
  *                         All rights reserved.
  * Copyright (c) 2016-2022 IBM Corporation.  All rights reserved.
- * Copyright (c) 2021-2024 Nanook Consulting  All rights reserved.
+ * Copyright (c) 2021-2025 Nanook Consulting  All rights reserved.
  * Copyright (c) 2023      Triad National Security, LLC. All rights reserved.
  * $COPYRIGHT$
  *
@@ -47,9 +47,7 @@
 #endif
 
 #include <event.h>
-#if !PMIX_HAVE_LIBEV
-#    include <event2/thread.h>
-#endif
+#include <event2/thread.h>
 
 #ifdef PMIX_GIT_REPO_BUILD
 static const char pmix_version_string[] = "OpenPMIx " PMIX_VERSION ", repo rev: " PMIX_REPO_REV
@@ -520,7 +518,7 @@ cleanup:
 pmix_status_t PMIx_Init(pmix_proc_t *proc,
                         pmix_info_t info[], size_t ninfo)
 {
-    char *evar;
+    char *evar, *suri;
     pmix_status_t rc = PMIX_SUCCESS;
     pmix_cb_t cb;
     pmix_buffer_t *req;
@@ -559,11 +557,12 @@ pmix_status_t PMIx_Init(pmix_proc_t *proc,
          * to connect if are currently unconnected */
         if (!pmix_globals.connected) {
             rc = pmix_ptl.connect_to_peer((struct pmix_peer_t *) pmix_client_globals.myserver, info,
-                                          ninfo);
+                                          ninfo, &suri);
             if (PMIX_SUCCESS == rc) {
                 PMIX_ACQUIRE_THREAD(&pmix_global_lock);
                 pmix_init_result = rc;
                 pmix_client_globals.singleton = false;
+                free(suri);
                 PMIX_RELEASE_THREAD(&pmix_global_lock);
             }
         }
@@ -757,13 +756,7 @@ pmix_status_t PMIx_Init(pmix_proc_t *proc,
             if (PMIX_CHECK_KEY(&info[n], PMIX_GDS_MODULE)) {
                 PMIX_INFO_LOAD(&ginfo, PMIX_GDS_MODULE, info[n].value.data.string, PMIX_STRING);
                 found = true;
-            } else if (PMIX_CHECK_KEY(&info[n], PMIX_TOPOLOGY2)) {
-                /* adopt this as our topology */
-                pmix_topology_t *topo;
-                topo = info[n].value.data.topo;
-                pmix_globals.topology.source = strdup(topo->source);
-                pmix_globals.topology.topology = topo->topology;
-                pmix_globals.external_topology = true;
+                break;
             }
         }
     }
@@ -780,7 +773,8 @@ pmix_status_t PMIx_Init(pmix_proc_t *proc,
     PMIX_INFO_DESTRUCT(&ginfo);
 
     /* attempt to connect to a server */
-    rc = pmix_ptl.connect_to_peer((struct pmix_peer_t *) pmix_client_globals.myserver, info, ninfo);
+    rc = pmix_ptl.connect_to_peer((struct pmix_peer_t *) pmix_client_globals.myserver,
+                                   info, ninfo, &suri);
     if (PMIX_SUCCESS != rc) {
         /* mark that we couldn't connect to a server */
         pmix_client_globals.singleton = true;
@@ -802,6 +796,7 @@ pmix_status_t PMIx_Init(pmix_proc_t *proc,
         if (PMIX_SUCCESS != rc) {
             pmix_init_result = rc;
             PMIX_RELEASE_THREAD(&pmix_global_lock);
+            free(suri);
             return rc;
         }
     } else {
@@ -815,6 +810,7 @@ pmix_status_t PMIx_Init(pmix_proc_t *proc,
             PMIX_RELEASE(req);
             pmix_init_result = rc;
             PMIX_RELEASE_THREAD(&pmix_global_lock);
+            free(suri);
             return rc;
         }
         /* send to the server */
@@ -823,6 +819,7 @@ pmix_status_t PMIx_Init(pmix_proc_t *proc,
         if (PMIX_SUCCESS != rc) {
             pmix_init_result = rc;
             PMIX_RELEASE_THREAD(&pmix_global_lock);
+            free(suri);
             return rc;
         }
         /* wait for the data to return */
@@ -831,6 +828,48 @@ pmix_status_t PMIx_Init(pmix_proc_t *proc,
         PMIX_DESTRUCT(&cb);
     }
     pmix_init_result = rc;
+
+    /* store our server's ID */
+    if (!pmix_client_globals.singleton &&
+        NULL != pmix_client_globals.myserver &&
+        NULL != pmix_client_globals.myserver->info) {
+        kptr = PMIX_NEW(pmix_kval_t);
+        kptr->key = strdup(PMIX_SERVER_NSPACE);
+        PMIX_VALUE_CREATE(kptr->value, 1);
+        kptr->value->type = PMIX_STRING;
+        kptr->value->data.string = strdup(pmix_client_globals.myserver->info->pname.nspace);
+        PMIX_GDS_STORE_KV(rc, pmix_globals.mypeer, &pmix_globals.myid, PMIX_INTERNAL, kptr);
+        if (PMIX_SUCCESS != rc) {
+            PMIX_ERROR_LOG(rc);
+            return rc;
+        }
+        PMIX_RELEASE(kptr); // maintain accounting
+        kptr = PMIX_NEW(pmix_kval_t);
+        kptr->key = strdup(PMIX_SERVER_RANK);
+        PMIX_VALUE_CREATE(kptr->value, 1);
+        kptr->value->type = PMIX_PROC_RANK;
+        kptr->value->data.rank = pmix_client_globals.myserver->info->pname.rank;
+        PMIX_GDS_STORE_KV(rc, pmix_globals.mypeer, &pmix_globals.myid, PMIX_INTERNAL, kptr);
+        PMIX_RELEASE(kptr); // maintain accounting
+        if (PMIX_SUCCESS != rc) {
+            PMIX_ERROR_LOG(rc);
+            return rc;
+        }
+
+        /* store the URI for subsequent lookups */
+        PMIX_KVAL_NEW(kptr, PMIX_SERVER_URI);
+        kptr->value->type = PMIX_STRING;
+        pmix_asprintf(&kptr->value->data.string, "%s.%u;%s",
+                      pmix_client_globals.myserver->info->pname.nspace,
+                      pmix_client_globals.myserver->info->pname.rank, suri);
+        free(suri);
+        PMIX_GDS_STORE_KV(rc, pmix_globals.mypeer, &pmix_globals.myid, PMIX_INTERNAL, kptr);
+        PMIX_RELEASE(kptr); // maintain accounting
+        if (PMIX_SUCCESS != rc) {
+            PMIX_ERROR_LOG(rc);
+            return rc;
+        }
+    }
 
     // enable show_help subsystem
     pmix_show_help_enabled = true;
@@ -896,33 +935,6 @@ pmix_status_t PMIx_Init(pmix_proc_t *proc,
     /* check to see if we need to notify anyone */
     if (NULL != info) {
         _check_for_notify(info, ninfo);
-    }
-
-    /* store our server's ID */
-    if (NULL != pmix_client_globals.myserver &&
-        NULL != pmix_client_globals.myserver->info) {
-        kptr = PMIX_NEW(pmix_kval_t);
-        kptr->key = strdup(PMIX_SERVER_NSPACE);
-        PMIX_VALUE_CREATE(kptr->value, 1);
-        kptr->value->type = PMIX_STRING;
-        kptr->value->data.string = strdup(pmix_client_globals.myserver->info->pname.nspace);
-        PMIX_GDS_STORE_KV(rc, pmix_globals.mypeer, &pmix_globals.myid, PMIX_INTERNAL, kptr);
-        if (PMIX_SUCCESS != rc) {
-            PMIX_ERROR_LOG(rc);
-            return rc;
-        }
-        PMIX_RELEASE(kptr); // maintain accounting
-        kptr = PMIX_NEW(pmix_kval_t);
-        kptr->key = strdup(PMIX_SERVER_RANK);
-        PMIX_VALUE_CREATE(kptr->value, 1);
-        kptr->value->type = PMIX_PROC_RANK;
-        kptr->value->data.rank = pmix_client_globals.myserver->info->pname.rank;
-        PMIX_GDS_STORE_KV(rc, pmix_globals.mypeer, &pmix_globals.myid, PMIX_INTERNAL, kptr);
-        if (PMIX_SUCCESS != rc) {
-            PMIX_ERROR_LOG(rc);
-            return rc;
-        }
-        PMIX_RELEASE(kptr); // maintain accounting
     }
 
     /* register the client supported attrs */
@@ -1478,258 +1490,4 @@ PMIX_EXPORT pmix_status_t PMIx_Commit(void)
     PMIX_RELEASE(cb);
 
     return rc;
-}
-
-/* need to thread-shift this request */
-PMIX_EXPORT pmix_status_t PMIx_Resolve_peers(const char *nodename, const pmix_nspace_t nspace,
-                                             pmix_proc_t **procs, size_t *nprocs)
-{
-    pmix_info_t info[2], *iptr;
-    pmix_status_t rc;
-    pmix_proc_t proc;
-    pmix_value_t *val;
-    char **p, **tmp = NULL, *prs;
-    pmix_proc_t *pa;
-    size_t m, n, np, ninfo;
-    pmix_namespace_t *ns;
-
-    /* set default response */
-    *procs = NULL;
-    *nprocs = 0;
-
-    PMIX_ACQUIRE_THREAD(&pmix_global_lock);
-    if (pmix_globals.init_cntr <= 0) {
-        PMIX_RELEASE_THREAD(&pmix_global_lock);
-        return PMIX_ERR_INIT;
-    }
-    PMIX_RELEASE_THREAD(&pmix_global_lock);
-
-    /* if I am a client and my server is earlier than v3.2.x, then
-     * I need to look for this data under rank=PMIX_RANK_WILDCARD
-     * with a key equal to the nodename */
-    if (PMIX_PEER_IS_CLIENT(pmix_globals.mypeer)
-        && PMIX_PEER_IS_EARLIER(pmix_client_globals.myserver, 3, 1, 100)) {
-        proc.rank = PMIX_RANK_WILDCARD;
-        iptr = NULL;
-        ninfo = 0;
-    } else {
-        proc.rank = PMIX_RANK_UNDEF;
-        PMIX_INFO_LOAD(&info[0], PMIX_NODE_INFO, NULL, PMIX_BOOL);
-        PMIX_INFO_LOAD(&info[1], PMIX_HOSTNAME, nodename, PMIX_STRING);
-        iptr = info;
-        ninfo = 2;
-    }
-
-    if (NULL == nspace || 0 == pmix_nslen(nspace)) {
-        rc = PMIX_ERR_NOT_FOUND;
-        np = 0;
-        /* cycle across all known nspaces and aggregate the results */
-        PMIX_LIST_FOREACH (ns, &pmix_globals.nspaces, pmix_namespace_t) {
-            PMIX_LOAD_NSPACE(proc.nspace, ns->nspace);
-            rc = PMIx_Get(&proc, PMIX_LOCAL_PEERS, iptr, ninfo, &val);
-            if (PMIX_SUCCESS != rc) {
-                continue;
-            }
-
-            /* sanity check */
-            if (NULL == val) {
-                rc = PMIX_ERR_NOT_FOUND;
-                continue;
-            }
-            if (PMIX_STRING != val->type) {
-                rc = PMIX_ERR_INVALID_VAL;
-                PMIX_VALUE_FREE(val, 1);
-                continue;
-            }
-            if (NULL == val->data.string) {
-                /* no local peers on this node */
-                PMIX_VALUE_FREE(val, 1);
-                continue;
-            }
-            /* prepend the nspace */
-            if (0 > asprintf(&prs, "%s:%s", ns->nspace, val->data.string)) {
-                PMIX_VALUE_FREE(val, 1);
-                continue;
-            }
-            /* add to our list of results */
-            PMIx_Argv_append_nosize(&tmp, prs);
-            /* split to count the npeers */
-            p = PMIx_Argv_split(val->data.string, ',');
-            np += PMIx_Argv_count(p);
-            /* done with this entry */
-            PMIx_Argv_free(p);
-            free(prs);
-            PMIX_VALUE_FREE(val, 1);
-        }
-        if (0 < np) {
-            /* allocate the proc array */
-            PMIX_PROC_CREATE(pa, np);
-            if (NULL == pa) {
-                rc = PMIX_ERR_NOMEM;
-                PMIx_Argv_free(tmp);
-                goto done;
-            }
-            *procs = pa;
-            *nprocs = np;
-            /* transfer the results */
-            np = 0;
-            for (n = 0; NULL != tmp[n]; n++) {
-                /* find the nspace delimiter */
-                prs = strchr(tmp[n], ':');
-                if (NULL == prs) {
-                    /* should never happen, but silence a Coverity warning */
-                    rc = PMIX_ERR_BAD_PARAM;
-                    PMIx_Argv_free(tmp);
-                    PMIX_PROC_FREE(pa, np);
-                    *procs = NULL;
-                    *nprocs = 0;
-                    goto done;
-                }
-                *prs = '\0';
-                ++prs;
-                p = PMIx_Argv_split(prs, ',');
-                for (m = 0; NULL != p[m]; m++) {
-                    PMIX_LOAD_NSPACE(pa[np].nspace, tmp[n]);
-                    pa[np].rank = strtoul(p[m], NULL, 10);
-                    ++np;
-                }
-                PMIx_Argv_free(p);
-            }
-            PMIx_Argv_free(tmp);
-            rc = PMIX_SUCCESS;
-        }
-        goto done;
-    }
-
-    /* get the list of local peers for this nspace and node */
-    PMIX_LOAD_NSPACE(proc.nspace, nspace);
-
-    rc = PMIx_Get(&proc, PMIX_LOCAL_PEERS, iptr, ninfo, &val);
-    if (PMIX_SUCCESS != rc) {
-        goto done;
-    }
-
-    /* sanity check */
-    if (NULL == val) {
-        rc = PMIX_ERR_NOT_FOUND;
-        goto done;
-    }
-    if (PMIX_STRING != val->type || NULL == val->data.string) {
-        rc = PMIX_ERR_INVALID_VAL;
-        PMIX_VALUE_FREE(val, 1);
-        goto done;
-    }
-
-    /* split the procs to get a list */
-    p = PMIx_Argv_split(val->data.string, ',');
-    np = PMIx_Argv_count(p);
-    PMIX_VALUE_FREE(val, 1);
-
-    /* allocate the proc array */
-    PMIX_PROC_CREATE(pa, np);
-    if (NULL == pa) {
-        rc = PMIX_ERR_NOMEM;
-        PMIx_Argv_free(p);
-        goto done;
-    }
-    /* transfer the results */
-    for (n = 0; n < np; n++) {
-        PMIX_LOAD_NSPACE(pa[n].nspace, nspace);
-        pa[n].rank = strtoul(p[n], NULL, 10);
-    }
-    PMIx_Argv_free(p);
-    *procs = pa;
-    *nprocs = np;
-
-done:
-    if (NULL != iptr) {
-        PMIX_INFO_DESTRUCT(&info[0]);
-        PMIX_INFO_DESTRUCT(&info[1]);
-    }
-    return rc;
-}
-
-PMIX_EXPORT pmix_status_t PMIx_Resolve_nodes(const pmix_nspace_t nspace, char **nodelist)
-{
-    pmix_status_t rc;
-    pmix_proc_t proc;
-    pmix_value_t *val;
-    char **tmp = NULL, **p;
-    size_t n;
-    pmix_namespace_t *ns;
-
-    /* set default response */
-    *nodelist = NULL;
-
-    PMIX_ACQUIRE_THREAD(&pmix_global_lock);
-    if (pmix_globals.init_cntr <= 0) {
-        PMIX_RELEASE_THREAD(&pmix_global_lock);
-        return PMIX_ERR_INIT;
-    }
-    PMIX_RELEASE_THREAD(&pmix_global_lock);
-
-    /* get the list of nodes for this nspace */
-    proc.rank = PMIX_RANK_WILDCARD;
-
-    if (NULL == nspace || 0 == pmix_nslen(nspace)) {
-        rc = PMIX_ERR_NOT_FOUND;
-        /* cycle across all known nspaces and aggregate the results */
-        PMIX_LIST_FOREACH (ns, &pmix_globals.nspaces, pmix_namespace_t) {
-            PMIX_LOAD_NSPACE(proc.nspace, ns->nspace);
-            rc = PMIx_Get(&proc, PMIX_NODE_LIST, NULL, 0, &val);
-            if (PMIX_SUCCESS != rc) {
-                continue;
-            }
-
-            /* sanity check */
-            if (NULL == val) {
-                rc = PMIX_ERR_NOT_FOUND;
-                continue;
-            }
-            if (PMIX_STRING != val->type) {
-                rc = PMIX_ERR_INVALID_VAL;
-                PMIX_VALUE_FREE(val, 1);
-                continue;
-            }
-            if (NULL == val->data.string) {
-                /* no nodes found */
-                PMIX_VALUE_FREE(val, 1);
-                continue;
-            }
-            /* add to our list of results, ensuring uniqueness */
-            p = PMIx_Argv_split(val->data.string, ',');
-            for (n = 0; NULL != p[n]; n++) {
-                PMIx_Argv_append_unique_nosize(&tmp, p[n]);
-            }
-            PMIx_Argv_free(p);
-            PMIX_VALUE_FREE(val, 1);
-        }
-        if (0 < PMIx_Argv_count(tmp)) {
-            *nodelist = PMIx_Argv_join(tmp, ',');
-            PMIx_Argv_free(tmp);
-            rc = PMIX_SUCCESS;
-        }
-        return rc;
-    }
-
-    PMIX_LOAD_NSPACE(proc.nspace, nspace);
-    rc = PMIx_Get(&proc, PMIX_NODE_LIST, NULL, 0, &val);
-    if (PMIX_SUCCESS != rc) {
-        return rc;
-    }
-
-    /* sanity check */
-    if (NULL == val) {
-        return PMIX_ERR_NOT_FOUND;
-    }
-    if (PMIX_STRING != val->type || NULL == val->data.string) {
-        PMIX_VALUE_FREE(val, 1);
-        return PMIX_ERR_INVALID_VAL;
-    }
-
-    /* pass back the result */
-    *nodelist = strdup(val->data.string);
-    PMIX_VALUE_FREE(val, 1);
-
-    return PMIX_SUCCESS;
 }

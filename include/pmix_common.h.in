@@ -46,7 +46,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  * Copyright (c) 2020      Cisco Systems, Inc.  All rights reserved
- * Copyright (c) 2021-2024 Nanook Consulting  All rights reserved.
+ * Copyright (c) 2021-2025 Nanook Consulting  All rights reserved.
  * $COPYRIGHT$
  *
  * Additional copyrights may follow
@@ -462,6 +462,9 @@ typedef uint32_t pmix_rank_t;
 #define PMIX_EVENT_TIMESTAMP                "pmix.evtstamp"         // (time_t) System time when the associated event occurred.
 #define PMIX_EVENT_ONESHOT                  "pmix.evone"            // (bool) when registering, indicate that this event handler is to be deleted
                                                                     //        after being invoked
+#define PMIX_EVENT_STAYS_LOCAL              "pmix.evlocal"          // (bool) Event is not to be passed up to the host environment - used
+                                                                    //        when the range is custom to also indicate range=local and prevent
+                                                                    //        infinite loops with the host
 
 /* fault tolerance-related events */
 #define PMIX_EVENT_TERMINATE_SESSION        "pmix.evterm.sess"      // (bool) RM intends to terminate session
@@ -469,6 +472,7 @@ typedef uint32_t pmix_rank_t;
 #define PMIX_EVENT_TERMINATE_NODE           "pmix.evterm.node"      // (bool) RM intends to terminate all procs on this node
 #define PMIX_EVENT_TERMINATE_PROC           "pmix.evterm.proc"      // (bool) RM intends to terminate just this process
 #define PMIX_EVENT_ACTION_TIMEOUT           "pmix.evtimeout"        // (int) time in sec before RM will execute error response
+
 
 /* attributes used to describe "spawn" directives */
 #define PMIX_PERSONALITY                    "pmix.pers"             // (char*) name of personality to use
@@ -656,6 +660,14 @@ typedef uint32_t pmix_rank_t;
                                                                     //         may optionally specify the session using
                                                                     //         the PMIX_SESSION_ID attribute - default
                                                                     //         is the session of the requestor
+#define PMIX_QUERY_RESOLVE_PEERS            "pmix.qry.peers"        // (pmix_data_array_t*) Return an array of pmix_proc_t containing the process IDs
+                                                                    //         of procs from the given nspace that are executing on the specified node.
+                                                                    //         Effectively asking the host respond to a PMIx_Resolve_peers request on the
+                                                                    //         caller's behalf
+#define PMIX_QUERY_RESOLVE_NODE             "pmix.qry.node"         // (char*) Return a comma-delimited string of nodes where procs from the specified
+                                                                    //         nspace have been placed (may or may not be executing at the time of request).
+                                                                    //         Effectively asking the host respond to a PMIx_Resolve_node request on the
+                                                                    //         caller's behalf
 
 
 /* query qualifiers - these are used to provide information to narrow/modify the query. Value type shown is the type of data expected
@@ -934,6 +946,10 @@ typedef uint32_t pmix_rank_t;
                                                                     //         of pmix_resource_unit_t structs.
 #define PMIX_ALLOC_CHILD_SEP                "pmix.alloc.sep"        // (bool) Treat the resulting allocation as independent from its parent - i.e.,
                                                                     //        do not terminate the allocation upon termination of the parent.
+#define PMIX_MEM_ALLOC_KIND                 "pmix.alloc.mkind"      // (char*) Comma-delimited list of memory kinds
+                                                                    //         being allocated (e.g., system,mpi,rocm:device)
+#define PMIX_GPU_SUPPORT                    "pmix.gpu.support"      // (bool) Direct application to either enable (true) or
+                                                                    //        disable (false) its internal library's GPU support
 
 
 /* job control attributes */
@@ -986,13 +1002,15 @@ typedef uint32_t pmix_rank_t;
  *    session once instantiated
  */
 #define PMIX_SESSION_INSTANTIATE            "pmix.ssn.inst"         // (bool) Instantiate the specified session
+#define PMIX_SESSION_RESOURCES              "pmix.ssn.res"          // (pmix_data_array_t*) Array of pmix_info_t describing the
+                                                                    //        resources to be included in the session. This can
+                                                                    //        include a regex of node names, array of resource blocks,
+                                                                    //        etc.
 #define PMIX_SESSION_JOB                    "pmix.ssn.job"          // (pmix_data_array_t*) Array of pmix_info_t describing the job info
                                                                     //        to be applied in conjunction with specified PMIX_SESSION_APP
                                                                     //        definitions. Error if given without a PMIX_SESSION_APP description.
 #define PMIX_SESSION_APP                    "pmix.ssn.app"          // (pmix_data_array_t*) Array of pmix_app_t to be executed in the assigned
                                                                     //        session upon session instantiation
-#define PMIX_SESSION_PROVISION              "pmix.ssn.pvn"          // (pmix_data_array_t*) description of nodes to be provisioned with
-                                                                    //       specified image
 #define PMIX_SESSION_PROVISION_NODES        "pmix.ssn.pvnnds"       // (char*) regex identifying nodes that are to be provisioned
 #define PMIX_SESSION_PROVISION_IMAGE        "pmix.ssn.pvnimg"       // (char*) name of the image that is to be provisioned
 
@@ -1123,7 +1141,10 @@ typedef uint32_t pmix_rank_t;
 #define PMIX_GROUP_NAMES                    "pmix.pgrp.nm"          // (pmix_data_array_t*) Returns an array of string names of the process groups
                                                                     //        in which the given process is a member.
 #define PMIX_GROUP_INFO                     "pmix.grp.info"         // (pmix_data_array_t*) Array of pmix_info_t containing data that is to be
-                                                                    //        shared across all members of a group during group construction
+                                                                    //        shared across all members of a group during group construction. When
+                                                                    //        passed to the host, the array must start with the process ID
+                                                                    //        of the proc that provided it
+#define PMIX_GROUP_INFO_ARRAY               "pmix.grp.infoarray"    // (pmix_data_array_t*) Array of pmix_info_t, each containing a PMIX_GROUP_INFO array
 #define PMIX_GROUP_LOCAL_CID                "pmix.grp.lclid"        // (size_t) local context ID for the specified process member of a group
 #define PMIX_GROUP_ADD_MEMBERS              "pmix.grp.add"          // (pmix_data_array_t*) Array of pmix_proc_t identifying procs that are not
                                                                     //        included in the membership specified in the procs array passed to
@@ -1140,6 +1161,7 @@ typedef uint32_t pmix_rank_t;
                                                                     //        with a NULL for the procs parameter. This indicates that the caller
                                                                     //        wishes to be included via a group invite, and so the library will
                                                                     //        handle the necessary event registrations on behalf of the caller.
+#define PMIX_GROUP_JOB_INFO                 "pmix.grp.jinfo"        // (pmix_byte_object_t) Job-level info for group construction
 
 
 /* Storage-Related Attributes */
@@ -1735,7 +1757,8 @@ typedef enum {
 
 typedef enum {
     PMIX_GROUP_CONSTRUCT,
-    PMIX_GROUP_DESTRUCT
+    PMIX_GROUP_DESTRUCT,
+    PMIX_GROUP_NONE
 } pmix_group_operation_t;
 
 /* define storage medium values

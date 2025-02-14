@@ -14,7 +14,7 @@
  * Copyright (c) 2016      Mellanox Technologies, Inc.
  *                         All rights reserved.
  * Copyright (c) 2022      Triad National Security, LLC. All rights reserved.
- * Copyright (c) 2021-2023 Nanook Consulting  All rights reserved.
+ * Copyright (c) 2021-2025 Nanook Consulting  All rights reserved.
  * $COPYRIGHT$
  *
  * Additional copyrights may follow
@@ -44,14 +44,7 @@ char* PMIx_Info_string(const pmix_info_t *info)
     pmix_status_t rc;
     char *output = NULL;
 
-    if (pmix_globals.init_cntr <= 0) {
-        pmix_bfrops_base_print_info(&output, NULL, (void*)info, PMIX_INFO);
-        return output;
-    }
-
-    PMIX_BFROPS_PRINT(rc, pmix_globals.mypeer,
-                      &output, NULL,
-                      (void*)info, PMIX_INFO);
+    rc = pmix_bfrops_base_print_info(&output, NULL, (void*)info, PMIX_INFO);
     if (PMIX_SUCCESS != rc) {
         return NULL;
     }
@@ -63,14 +56,7 @@ char* PMIx_Value_string(const pmix_value_t *value)
     pmix_status_t rc;
     char *output = NULL;
 
-    if (pmix_globals.init_cntr <= 0) {
-        pmix_bfrops_base_print_value(&output, NULL, (void*)value, PMIX_VALUE);
-        return output;
-    }
-
-    PMIX_BFROPS_PRINT(rc, pmix_globals.mypeer,
-                      &output, NULL,
-                      (void*)value, PMIX_VALUE);
+    rc = pmix_bfrops_base_print_value(&output, NULL, (void*)value, PMIX_VALUE);
     if (PMIX_SUCCESS != rc) {
         return NULL;
     }
@@ -1031,7 +1017,7 @@ pmix_status_t pmix_bfrops_base_print_info_directives(char **output, char *prefix
     PMIX_HIDE_UNUSED_PARAMS(type);
 
     tmp = PMIx_Info_directives_string(*src);
-    if (0 > asprintf(output, "%sData type: PMIX_INFO_DIRECTIVES\tValue: %s",
+    if (0 > asprintf(output, "%sPMIX_INFO_DIRECTIVES\tValue: %s",
                      (NULL == prefix) ? " " : prefix, tmp)) {
         free(tmp);
         return PMIX_ERR_NOMEM;
@@ -1164,7 +1150,9 @@ pmix_status_t pmix_bfrops_base_print_pinfo(char **output, char *prefix,
                      "%sData type: PMIX_PROC_INFO\tValue:\n%s\n%sHostname: %s\tExecutable: "
                      "%s\n%sPid: %lu\tExit code: %d\tState: %s",
                      (NULL == prefix) ? " " : prefix, tmp, p2,
-                     src->hostname, src->executable_name, p2,
+                     (NULL == src->hostname) ? "NULL" : src->hostname,
+                     (NULL == src->executable_name) ? "NULL" : src->executable_name,
+                     p2,
                      (unsigned long) src->pid, src->exit_code,
                      PMIx_Proc_state_string(src->state))) {
         free(p2);

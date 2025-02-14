@@ -5,7 +5,7 @@
  *                         and Technology (RIST).  All rights reserved.
  * Copyright (c) 2018-2020 Mellanox Technologies, Inc.
  *                         All rights reserved.
- * Copyright (c) 2021-2024 Nanook Consulting  All rights reserved.
+ * Copyright (c) 2021-2025 Nanook Consulting  All rights reserved.
  * Copyright (c) 2022-2024 Triad National Security, LLC. All rights reserved.
  * $COPYRIGHT$
  *
@@ -224,10 +224,10 @@ fetch_nodeinfo(
     }
 
     if (NULL == nodeinfo) {
-        if (!found) {
-            // They didn't specify, so it is optional.
-            return PMIX_ERR_DATA_VALUE_NOT_FOUND;
-        }
+        // the node is not present in the job, which means
+        // there were no procs on that node - or the node
+        // is unknown, which would indicate an error in
+        // specifying it
         return PMIX_ERR_NOT_FOUND;
     }
     // If they want it all, give it to them.
@@ -259,7 +259,7 @@ fetch_nodeinfo(
     }
     // If we are here, then they want a specific key/value pair. So, scan the
     // info list of this node to find the key they want.
-    rc = PMIX_ERR_NOT_FOUND;
+    rc = PMIX_ERR_DATA_VALUE_NOT_FOUND;
     pmix_kval_t *kvi;
     PMIX_LIST_FOREACH (kvi, nodeinfo->info, pmix_kval_t) {
         if (!PMIX_CHECK_KEY(kvi, key)) {
@@ -398,7 +398,8 @@ fetch_appinfo(
     rc = fetch_nodeinfo(
         key, job, app->nodeinfo, info, ninfo, kvs
     );
-    if (PMIX_ERR_DATA_VALUE_NOT_FOUND != rc) {
+    if (PMIX_ERR_DATA_VALUE_NOT_FOUND != rc &&
+        PMIX_ERR_NOT_FOUND != rc) {
         return rc;
     }
     // Scan the info list of this app to generate the results.
@@ -444,7 +445,7 @@ xfer_sessioninfo(
             pmix_kval_t *kvi;
             PMIX_LIST_FOREACH(kvi, sessionlist, pmix_kval_t) {
                 pmix_kval_t *kv = PMIX_NEW(pmix_kval_t);
-                kv->key = strdup(kv->key);
+                kv->key = strdup(kvi->key);
                 PMIX_VALUE_XFER(rc, kv->value, kvi->value);
                 if (PMIX_SUCCESS != rc) {
                     PMIX_RELEASE(kv);
@@ -697,7 +698,10 @@ pmix_gds_shmem2_fetch(
             rc = fetch_nodeinfo(
                 key, job, job->smdata->nodeinfo, qualifiers, nqual, kvs
             );
-            if (PMIX_SUCCESS != rc && PMIX_RANK_WILDCARD == proc->rank) {
+            if (PMIX_SUCCESS != rc &&
+                PMIX_ERR_NOT_FOUND != rc &&
+                (PMIX_RANK_WILDCARD == proc->rank ||
+                 PMIX_RANK_UNDEF == proc->rank)) {
                 // Let hash deal with this one.
                 rc = PMIX_ERR_NOT_FOUND;
             }
@@ -788,8 +792,12 @@ doover:
             rc = PMIX_ERR_NOT_FOUND;
         }
     }
-
     if (PMIX_SUCCESS == rc) {
+        if (NULL != key && PMIX_CHECK_RESERVED_KEY(key)) {
+            // there is no need to check other scopes for
+            // reserved keys
+            return PMIX_SUCCESS;
+        }
         if (PMIX_GLOBAL == scope) {
             if (ht == local_ht) {
                 // We need to do this again for the remote data.
@@ -809,9 +817,49 @@ doover:
     }
 
     if (0 == pmix_list_get_size(kvs)) {
-        // If we didn't find it and the rank was
-        // valid, then let hash deal with it.
-        rc = PMIX_ERR_NOT_FOUND;
+        /* if we didn't find it and the rank was valid, then
+         * check to see if the data exists in a different scope.
+         * This is done to avoid having the process go into a
+         * timeout wait when the data will never appear within
+         * the specified scope */
+        if (PMIX_RANK_IS_VALID(proc->rank)) {
+            pmix_kval_t *kv;
+            if (PMIX_LOCAL == scope) {
+                if (NULL != remote_ht) {
+                    /* check the remote scope */
+                    rc = pmix_hash_fetch(remote_ht, proc->rank, key, qualifiers, nqual, kvs, NULL);
+                    if (PMIX_SUCCESS == rc || 0 < pmix_list_get_size(kvs)) {
+                        while (NULL != (kv = (pmix_kval_t *) pmix_list_remove_first(kvs))) {
+                            PMIX_RELEASE(kv);
+                        }
+                        rc = PMIX_ERR_EXISTS_OUTSIDE_SCOPE;
+                    } else {
+                        rc = PMIX_ERR_NOT_FOUND;
+                    }
+                } else {
+                    rc = PMIX_ERR_NOT_FOUND;
+                }
+            } else if (PMIX_REMOTE == scope) {
+                /* check the local scope */
+                rc = pmix_hash_fetch(local_ht, proc->rank, key, qualifiers, nqual, kvs, NULL);
+                if (PMIX_SUCCESS == rc || 0 < pmix_list_get_size(kvs)) {
+                    while (NULL != (kv = (pmix_kval_t *) pmix_list_remove_first(kvs))) {
+                        PMIX_RELEASE(kv);
+                    }
+                    rc = PMIX_ERR_EXISTS_OUTSIDE_SCOPE;
+                } else {
+                    rc = PMIX_ERR_NOT_FOUND;
+                }
+            }
+        } else {
+            rc = PMIX_ERR_NOT_FOUND;
+        }
+    } else {
+        // since we found something, the fetch is a success.
+        // We need to set the status here because the fetch on the
+        // last scope we tried might not have succeeded, but
+        // we found things in an earlier scope we tried
+        rc = PMIX_SUCCESS;
     }
     return rc;
 }

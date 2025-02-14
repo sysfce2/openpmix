@@ -8,7 +8,7 @@
  * Copyright (c) 2016      Mellanox Technologies, Inc.
  *                         All rights reserved.
  * Copyright (c) 2016      IBM Corporation.  All rights reserved.
- * Copyright (c) 2021-2023 Nanook Consulting.  All rights reserved.
+ * Copyright (c) 2021-2025 Nanook Consulting  All rights reserved.
  * $COPYRIGHT$
  *
  * Additional copyrights may follow
@@ -192,21 +192,34 @@ static void connection_event_handler(int incoming_sd, short flags, void *cbdata)
 }
 
 
-pmix_status_t pmix_base_write_rndz_file(char *filename, char *uri, bool *created)
+static pmix_status_t write_rndz_file(char *filename, char *uri,
+                                     bool *dir_created, bool *file_created)
 {
     FILE *fp;
     char *dirname;
     time_t mytime;
+    int rc;
 
     dirname = pmix_dirname(filename);
     if (NULL != dirname) {
-        if (0 != pmix_os_dirpath_create(dirname, 0755)) {
-            pmix_output(0, "System tmpdir %s could not be created\n", dirname);
-            PMIX_ERROR_LOG(PMIX_ERR_FILE_OPEN_FAILURE);
-            free(dirname);
-            return PMIX_ERR_FILE_OPEN_FAILURE;
+        rc = pmix_os_dirpath_create(dirname, 0755);
+        if (PMIX_ERR_SILENT == rc) {
+            // error has already been reported
+            return rc;
         }
-        *created = true;
+        if (PMIX_SUCCESS != rc && PMIX_ERR_EXISTS != rc) {
+            PMIX_ERROR_LOG(rc);
+            free(dirname);
+            return rc;
+        }
+        if (PMIX_SUCCESS == rc) {
+            // do not change the dir_created flag if the directory
+            // already exists as we don't know if we previously
+            // created it or it already existed. Success is returned
+            // when we were able to both create the directory
+            // and change its mode as directed
+            *dir_created = true;
+        }
         free(dirname);
     }
 
@@ -214,6 +227,7 @@ pmix_status_t pmix_base_write_rndz_file(char *filename, char *uri, bool *created
     if (NULL == fp) {
         pmix_output(0, "Impossible to open the file %s in write mode\n", filename);
         PMIX_ERROR_LOG(PMIX_ERR_FILE_OPEN_FAILURE);
+        *file_created = false;
         return PMIX_ERR_FILE_OPEN_FAILURE;
     }
 
@@ -229,6 +243,7 @@ pmix_status_t pmix_base_write_rndz_file(char *filename, char *uri, bool *created
     mytime = time(NULL);
     fprintf(fp, "%s\n", ctime(&mytime));
     fclose(fp);
+    *file_created = true;
     /* set the file mode */
     if (0 != chmod(filename, S_IRUSR | S_IWUSR | S_IRGRP)) {
         PMIX_ERROR_LOG(PMIX_ERR_FILE_OPEN_FAILURE);
@@ -286,8 +301,14 @@ pmix_status_t pmix_ptl_base_setup_listener(pmix_info_t info[], size_t ninfo)
         } else if (PMIX_CHECK_KEY(&info[n], PMIX_SERVER_REMOTE_CONNECTIONS)) {
             pmix_ptl_base.remote_connections = PMIX_INFO_TRUE(&info[n]);
         } else if (PMIX_CHECK_KEY(&info[n], PMIX_TCP_IF_INCLUDE)) {
+            if (NULL != pmix_ptl_base.if_include) {
+                free(pmix_ptl_base.if_include);
+            }
             pmix_ptl_base.if_include = strdup(info[n].value.data.string);
         } else if (PMIX_CHECK_KEY(&info[n], PMIX_TCP_IF_EXCLUDE)) {
+            if (NULL != pmix_ptl_base.if_exclude) {
+                free(pmix_ptl_base.if_exclude);
+            }
             pmix_ptl_base.if_exclude = strdup(info[n].value.data.string);
         } else if (PMIX_CHECK_KEY(&info[n], PMIX_TCP_IPV4_PORT)) {
             pmix_ptl_base.ipv4_port = info[n].value.data.integer;
@@ -622,8 +643,9 @@ pmix_status_t pmix_ptl_base_setup_listener(pmix_info_t info[], size_t ninfo)
         }
         pmix_output_verbose(2, pmix_ptl_base_framework.framework_output,
                             "WRITING RENDEZVOUS FILE %s", pmix_ptl_base.rendezvous_filename);
-        rc = pmix_base_write_rndz_file(pmix_ptl_base.rendezvous_filename, lt->uri,
-                                       &pmix_ptl_base.created_rendezvous_file);
+        rc = write_rndz_file(pmix_ptl_base.rendezvous_filename, lt->uri,
+                             &pmix_ptl_base.created_rendezvous_dir,
+                             &pmix_ptl_base.created_rendezvous_file);
         if (PMIX_SUCCESS != rc) {
             goto sockerror;
         }
@@ -637,12 +659,12 @@ nextstep:
                          pmix_ptl_base.system_tmpdir, pmix_globals.hostname)) {
             goto sockerror;
         }
-        rc = pmix_base_write_rndz_file(pmix_ptl_base.scheduler_filename, lt->uri,
-                                       &pmix_ptl_base.created_system_tmpdir);
+        rc = write_rndz_file(pmix_ptl_base.scheduler_filename, lt->uri,
+                             &pmix_ptl_base.created_system_tmpdir,
+                             &pmix_ptl_base.created_scheduler_filename);
         if (PMIX_SUCCESS != rc) {
             goto sockerror;
         }
-        pmix_ptl_base.created_scheduler_filename = true;
     }
 
     /* if we are the system controller, then drop an appropriately named
@@ -652,12 +674,12 @@ nextstep:
                          pmix_ptl_base.system_tmpdir, pmix_globals.hostname)) {
             goto sockerror;
         }
-        rc = pmix_base_write_rndz_file(pmix_ptl_base.sysctrlr_filename, lt->uri,
-                                       &pmix_ptl_base.created_system_tmpdir);
+        rc = write_rndz_file(pmix_ptl_base.sysctrlr_filename, lt->uri,
+                             &pmix_ptl_base.created_system_tmpdir,
+                             &pmix_ptl_base.created_sysctrlr_filename);
         if (PMIX_SUCCESS != rc) {
             goto sockerror;
         }
-        pmix_ptl_base.created_sysctrlr_filename = true;
     }
 
     /* if we are going to support tools, then drop contact file(s) */
@@ -666,12 +688,12 @@ nextstep:
                          pmix_ptl_base.system_tmpdir, pmix_globals.hostname)) {
             goto sockerror;
         }
-        rc = pmix_base_write_rndz_file(pmix_ptl_base.system_filename, lt->uri,
-                                       &pmix_ptl_base.created_system_tmpdir);
+        rc = write_rndz_file(pmix_ptl_base.system_filename, lt->uri,
+                             &pmix_ptl_base.created_system_tmpdir,
+                             &pmix_ptl_base.created_system_filename);
         if (PMIX_SUCCESS != rc) {
             goto sockerror;
         }
-        pmix_ptl_base.created_system_filename = true;
     }
 
     if (pmix_ptl_base.session_tool) {
@@ -682,12 +704,12 @@ nextstep:
         }
         pmix_output_verbose(2, pmix_ptl_base_framework.framework_output,
                             "WRITING SESSION TOOL FILE %s", pmix_ptl_base.session_filename);
-        rc = pmix_base_write_rndz_file(pmix_ptl_base.session_filename, lt->uri,
-                                       &pmix_ptl_base.created_session_tmpdir);
+        rc = write_rndz_file(pmix_ptl_base.session_filename, lt->uri,
+                             &pmix_ptl_base.created_session_tmpdir,
+                             &pmix_ptl_base.created_session_filename);
         if (PMIX_SUCCESS != rc) {
             goto sockerror;
         }
-        pmix_ptl_base.created_session_filename = true;
     }
 
     if (pmix_ptl_base.tool_support) {
@@ -699,12 +721,12 @@ nextstep:
         }
         pmix_output_verbose(2, pmix_ptl_base_framework.framework_output, "WRITING PID TOOL FILE %s",
                             pmix_ptl_base.pid_filename);
-        rc = pmix_base_write_rndz_file(pmix_ptl_base.pid_filename, lt->uri,
-                                       &pmix_ptl_base.created_session_tmpdir);
+        rc = write_rndz_file(pmix_ptl_base.pid_filename, lt->uri,
+                             &pmix_ptl_base.created_session_tmpdir,
+                             &pmix_ptl_base.created_pid_filename);
         if (PMIX_SUCCESS != rc) {
             goto sockerror;
         }
-        pmix_ptl_base.created_pid_filename = true;
 
         /* now output it into a file based on my nspace */
         if (0 > asprintf(&pmix_ptl_base.nspace_filename, "%s/pmix.%s.tool.%s",
@@ -714,12 +736,12 @@ nextstep:
         }
         pmix_output_verbose(2, pmix_ptl_base_framework.framework_output,
                             "WRITING NSPACE TOOL FILE %s", pmix_ptl_base.nspace_filename);
-        rc = pmix_base_write_rndz_file(pmix_ptl_base.nspace_filename, lt->uri,
-                                       &pmix_ptl_base.created_session_tmpdir);
+        rc = write_rndz_file(pmix_ptl_base.nspace_filename, lt->uri,
+                             &pmix_ptl_base.created_session_tmpdir,
+                             &pmix_ptl_base.created_nspace_filename);
         if (PMIX_SUCCESS != rc) {
             goto sockerror;
         }
-        pmix_ptl_base.created_nspace_filename = true;
     }
 
     return PMIX_SUCCESS;

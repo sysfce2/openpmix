@@ -37,9 +37,8 @@ with open("../VERSION") as fp:
 
 opmix_data = dict()
 for opmix_line in opmix_lines:
-    if '#' in opmix_line:
-        parts = opmix_line.split("#")
-        opmix_line = parts[0]
+    if '#' in opmix_line or 0 == len(opmix_line):
+        continue
     opmix_line = opmix_line.strip()
 
     if '=' not in opmix_line:
@@ -85,6 +84,15 @@ key = 'READTHEDOCS'
 if key in os.environ and os.environ[key] == 'True':
     print("OpenPMIx: found ReadTheDocs build environment")
 
+    # Tell Jinja2 templates the build is running on Read the Docs
+    if "html_context" not in globals():
+        html_context = {}
+    html_context["READTHEDOCS"] = True
+
+    # Define the canonical URL if you are using a custom domain on
+    # Read the Docs
+    html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "")
+
     rtd_v = os.environ['READTHEDOCS_VERSION']
     if os.environ['READTHEDOCS_VERSION_TYPE'] == 'external':
         # Make "release" be shorter than the full "opmix_ver" value.
@@ -121,6 +129,7 @@ if key in os.environ and os.environ[key] == 'True':
 # ones.
 import sphinx_rtd_theme
 extensions = ['recommonmark', "sphinx_rtd_theme"]
+pygments_style = 'sphinx'
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
